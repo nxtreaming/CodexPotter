@@ -217,6 +217,7 @@ mod tests {
     use super::*;
 
     use crate::workflow::rollout::PotterRolloutLine;
+    use codex_protocol::ThreadId;
     use codex_protocol::protocol::PotterRoundOutcome;
     use pretty_assertions::assert_eq;
     use std::path::PathBuf;
@@ -358,5 +359,79 @@ mod tests {
         assert_eq!(details.git_branch.as_deref(), Some("main"));
         assert_eq!(details.user_message.as_deref(), Some("hello task"));
         assert_eq!(details.rounds, Vec::new());
+    }
+
+    #[test]
+    fn overlay_details_tolerate_project_succeeded_without_round_finished_at_eof() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let project_dir = PathBuf::from(".codexpotter/projects/2026/04/24/3");
+        let project_dir_abs = workdir.path().join(&project_dir);
+        std::fs::create_dir_all(&project_dir_abs).expect("create project dir");
+
+        let progress_file_abs = project_dir_abs.join("MAIN.md");
+        std::fs::write(&progress_file_abs, "---\ngit_branch: \"main\"\n---\n").expect("write MAIN");
+
+        let rollout_path = workdir.path().join("rollout.jsonl");
+        std::fs::write(
+            &rollout_path,
+            r#"{"timestamp":"2026-03-01T00:00:01.000Z","type":"event_msg","payload":{"type":"agent_message","message":"final","phase":"final_answer"}}
+"#,
+        )
+        .expect("write rollout");
+
+        let potter_rollout_path = crate::workflow::rollout::potter_rollout_path(&project_dir_abs);
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &PotterRolloutLine::ProjectStarted {
+                user_message: Some("hello task".to_string()),
+                user_prompt_file: project_dir.join("MAIN.md"),
+            },
+        )
+        .expect("append project_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 3,
+            },
+        )
+        .expect("append round_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &PotterRolloutLine::RoundConfigured {
+                thread_id: ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c000")
+                    .expect("thread id"),
+                rollout_path: PathBuf::from("rollout.jsonl"),
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round_configured");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &PotterRolloutLine::ProjectSucceeded {
+                rounds: 1,
+                duration_secs: 1,
+                user_prompt_file: project_dir.join("MAIN.md"),
+                git_commit_start: "start".to_string(),
+                git_commit_end: "end".to_string(),
+            },
+        )
+        .expect("append project_succeeded");
+
+        let details = build_project_details_for_overlay(workdir.path(), &project_dir);
+        assert_eq!(details.error, None);
+        assert_eq!(details.project_dir, project_dir);
+        assert_eq!(details.git_branch.as_deref(), Some("main"));
+        assert_eq!(details.user_message.as_deref(), Some("hello task"));
+        assert_eq!(details.rounds.len(), 1);
+
+        let round = details.rounds.first().expect("round");
+        assert_eq!(round.round_current, 1);
+        assert_eq!(round.round_total, 3);
+        assert_eq!(round.duration_secs, 0);
+        assert_eq!(round.final_message_unix_secs, Some(1_772_323_201));
+        assert_eq!(round.final_message.as_deref(), Some("final"));
     }
 }
