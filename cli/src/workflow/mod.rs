@@ -32,6 +32,7 @@ pub mod prompt_queue;
 pub mod replay_session_config;
 pub mod resume;
 pub mod rollout;
+pub mod rollout_final_message;
 pub mod rollout_resume_index;
 mod round_event_bridge;
 pub mod round_runner;

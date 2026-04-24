@@ -31,7 +31,7 @@ fn read_final_assistant_message_for_hook(
         workdir,
         rollout_path,
     );
-    match crate::workflow::projects_overlay_details::read_final_agent_message_from_rollout(&abs) {
+    match crate::workflow::rollout_final_message::read_final_agent_message_from_rollout(&abs) {
         Ok((_, message)) => message.unwrap_or_default(),
         Err(err) => {
             warnings.push(format!(
