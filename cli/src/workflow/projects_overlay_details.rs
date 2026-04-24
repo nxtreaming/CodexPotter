@@ -161,6 +161,9 @@ fn overlay_round_entries_from_potter_rollout(
                 let Some(builder) = current.as_mut() else {
                     anyhow::bail!("potter-rollout: project_succeeded outside a round");
                 };
+                if builder.rollout_path.is_none() {
+                    anyhow::bail!("potter-rollout: project_succeeded before round_configured");
+                }
                 if builder.project_succeeded {
                     anyhow::bail!("potter-rollout: duplicate project_succeeded in a single round");
                 }
@@ -359,6 +362,53 @@ mod tests {
         assert_eq!(details.git_branch.as_deref(), Some("main"));
         assert_eq!(details.user_message.as_deref(), Some("hello task"));
         assert_eq!(details.rounds, Vec::new());
+    }
+
+    #[test]
+    fn overlay_details_rejects_project_succeeded_before_round_configured() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let project_dir = PathBuf::from(".codexpotter/projects/2026/04/24/4");
+        let project_dir_abs = workdir.path().join(&project_dir);
+        std::fs::create_dir_all(&project_dir_abs).expect("create project dir");
+
+        let progress_file_abs = project_dir_abs.join("MAIN.md");
+        std::fs::write(&progress_file_abs, "---\ngit_branch: \"main\"\n---\n").expect("write MAIN");
+
+        let potter_rollout_path = crate::workflow::rollout::potter_rollout_path(&project_dir_abs);
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &PotterRolloutLine::ProjectStarted {
+                user_message: Some("hello task".to_string()),
+                user_prompt_file: project_dir.join("MAIN.md"),
+            },
+        )
+        .expect("append project_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 3,
+            },
+        )
+        .expect("append round_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &PotterRolloutLine::ProjectSucceeded {
+                rounds: 1,
+                duration_secs: 1,
+                user_prompt_file: project_dir.join("MAIN.md"),
+                git_commit_start: "start".to_string(),
+                git_commit_end: "end".to_string(),
+            },
+        )
+        .expect("append project_succeeded");
+
+        let details = build_project_details_for_overlay(workdir.path(), &project_dir);
+        let error = details.error.expect("expected overlay error");
+        assert!(
+            error.contains("project_succeeded before round_configured"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
