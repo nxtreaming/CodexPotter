@@ -980,6 +980,70 @@ original goal line
     }
 
     #[test]
+    fn discover_projects_marks_project_succeeded_prefix_as_succeeded() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+
+        let main = write_main(workdir, ".codexpotter/projects/2026/03/02/5", None);
+        let rollout = workdir.join("succeeded.jsonl");
+        write_rollout_with_timestamp(&rollout, "2026-03-02T00:00:00.000Z");
+
+        let project_dir = main.parent().expect("project dir");
+        let potter_rollout_path =
+            project_dir.join(crate::workflow::rollout::POTTER_ROLLOUT_FILENAME);
+        let user_prompt_file = main.strip_prefix(workdir).expect("rel").to_path_buf();
+        let thread_id =
+            codex_protocol::ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c000")
+                .expect("thread id");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::ProjectStarted {
+                user_message: Some("live success".to_string()),
+                user_prompt_file: user_prompt_file.clone(),
+            },
+        )
+        .expect("append project_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 3,
+            },
+        )
+        .expect("append round_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id,
+                rollout_path: PathBuf::from("succeeded.jsonl"),
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round_configured");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::ProjectSucceeded {
+                rounds: 1,
+                duration_secs: 1,
+                user_prompt_file,
+                git_commit_start: "".to_string(),
+                git_commit_end: "".to_string(),
+            },
+        )
+        .expect("append project_succeeded");
+
+        let rows = discover_projects_for_overlay(workdir).expect("discover");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, PotterProjectListStatus::Succeeded);
+        assert_eq!(rows[0].rounds, 1);
+        assert_eq!(rows[0].description, "live success");
+        assert_eq!(rows[0].started_at_unix_secs, Some(1_772_409_600));
+    }
+
+    #[test]
     fn discover_projects_rounds_count_across_resume_windows() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workdir = temp.path();
