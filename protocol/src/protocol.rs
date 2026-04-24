@@ -918,6 +918,21 @@ pub enum HookEventName {
     PotterProjectStop,
 }
 
+impl HookEventName {
+    /// Return the kebab-case label used in hook run identifiers and user-facing output.
+    pub fn as_kebab_case(self) -> &'static str {
+        match self {
+            HookEventName::PreToolUse => "pre-tool-use",
+            HookEventName::PermissionRequest => "permission-request",
+            HookEventName::PostToolUse => "post-tool-use",
+            HookEventName::SessionStart => "session-start",
+            HookEventName::UserPromptSubmit => "user-prompt-submit",
+            HookEventName::Stop => "stop",
+            HookEventName::PotterProjectStop => "potter-project-stop",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HookHandlerType {

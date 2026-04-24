@@ -27,7 +27,7 @@ struct CommandShell {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ConfiguredHandler {
-    pub event_name: codex_protocol::protocol::HookEventName,
+    pub event_name: HookEventName,
     pub matcher: Option<String>,
     pub command: String,
     pub timeout_sec: u64,
@@ -40,22 +40,10 @@ impl ConfiguredHandler {
     fn run_id(&self) -> String {
         format!(
             "{}:{}:{}",
-            self.event_name_label(),
+            self.event_name.as_kebab_case(),
             self.display_order,
             self.source_path.display()
         )
-    }
-
-    fn event_name_label(&self) -> &'static str {
-        match self.event_name {
-            codex_protocol::protocol::HookEventName::PreToolUse => "pre-tool-use",
-            codex_protocol::protocol::HookEventName::PermissionRequest => "permission-request",
-            codex_protocol::protocol::HookEventName::PostToolUse => "post-tool-use",
-            codex_protocol::protocol::HookEventName::SessionStart => "session-start",
-            codex_protocol::protocol::HookEventName::UserPromptSubmit => "user-prompt-submit",
-            codex_protocol::protocol::HookEventName::Stop => "stop",
-            codex_protocol::protocol::HookEventName::PotterProjectStop => "potter-project-stop",
-        }
     }
 }
 

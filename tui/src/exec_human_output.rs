@@ -517,7 +517,7 @@ impl ExecHumanRenderer {
             EventMsg::HookStarted(ev) => {
                 out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
-                let label = hook_event_label(ev.run.event_name);
+                let label = ev.run.event_name.as_kebab_case();
                 let mut message = format!("Running {label} hook");
                 if let Some(status_message) = &ev.run.status_message
                     && !status_message.is_empty()
@@ -532,7 +532,7 @@ impl ExecHumanRenderer {
                 out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 let status = format!("{:?}", ev.run.status).to_lowercase();
-                let header = format!("{} hook ({status})", hook_event_label(ev.run.event_name));
+                let header = format!("{} hook ({status})", ev.run.event_name.as_kebab_case());
                 let mut lines: Vec<Line<'static>> = vec![Line::from(header)];
                 for entry in &ev.run.entries {
                     let prefix = match entry.kind {
@@ -1144,18 +1144,6 @@ fn replace_prefix(mut line: Line<'static>, from: &str, to: &str) -> Line<'static
     spans.extend(line.spans.into_iter().skip(1));
     line.spans = spans;
     line
-}
-
-fn hook_event_label(event_name: codex_protocol::protocol::HookEventName) -> &'static str {
-    match event_name {
-        codex_protocol::protocol::HookEventName::PreToolUse => "pre-tool-use",
-        codex_protocol::protocol::HookEventName::PermissionRequest => "permission-request",
-        codex_protocol::protocol::HookEventName::PostToolUse => "post-tool-use",
-        codex_protocol::protocol::HookEventName::SessionStart => "session-start",
-        codex_protocol::protocol::HookEventName::UserPromptSubmit => "user-prompt-submit",
-        codex_protocol::protocol::HookEventName::Stop => "stop",
-        codex_protocol::protocol::HookEventName::PotterProjectStop => "potter-project-stop",
-    }
 }
 
 fn reasoning_context_output_level(percent: i64) -> i64 {
