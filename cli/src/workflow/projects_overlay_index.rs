@@ -93,18 +93,26 @@ fn project_entry_for_progress_file(
         .and_then(|lines| crate::workflow::rollout_resume_index::build_resume_index(lines).ok());
 
     let Some(index) = resume_index else {
-        let description = read_project_description(progress_file_abs, None).unwrap_or_default();
-        let status = rollout_lines
+        let (user_message, rounds, started_at_unix_secs, status) = rollout_lines
             .as_deref()
-            .map(best_effort_project_list_status)
-            .unwrap_or(PotterProjectListStatus::Incomplete);
+            .map(|lines| {
+                (
+                    best_effort_project_user_message(lines),
+                    best_effort_project_list_rounds(lines),
+                    best_effort_project_started_at_unix_secs(workdir, lines),
+                    best_effort_project_list_status(lines),
+                )
+            })
+            .unwrap_or((None, 0, None, PotterProjectListStatus::Incomplete));
+        let description =
+            read_project_description(progress_file_abs, user_message).unwrap_or_default();
         return Ok(DiscoveredOverlayProject {
             row: PotterProjectListEntry {
                 project_dir,
                 progress_file,
                 description,
-                started_at_unix_secs: None,
-                rounds: 0,
+                started_at_unix_secs,
+                rounds,
                 status,
             },
             resume_index: None,
@@ -212,6 +220,52 @@ fn best_effort_project_list_status(lines: &[PotterRolloutLine]) -> PotterProject
     }
 
     PotterProjectListStatus::Incomplete
+}
+
+fn best_effort_project_user_message(lines: &[PotterRolloutLine]) -> Option<&str> {
+    lines.iter().find_map(|line| match line {
+        PotterRolloutLine::ProjectStarted { user_message, .. } => user_message.as_deref(),
+        _ => None,
+    })
+}
+
+fn best_effort_project_list_rounds(lines: &[PotterRolloutLine]) -> u32 {
+    let mut max_started_round = 0;
+    let mut finished_rounds: u32 = 0;
+
+    for line in lines {
+        match line {
+            PotterRolloutLine::RoundStarted { current, .. } => {
+                max_started_round = max_started_round.max(*current);
+            }
+            PotterRolloutLine::RoundFinished { .. } => {
+                finished_rounds = finished_rounds.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+
+    if max_started_round > 0 {
+        max_started_round
+    } else {
+        finished_rounds
+    }
+}
+
+fn best_effort_project_started_at_unix_secs(
+    workdir: &Path,
+    lines: &[PotterRolloutLine],
+) -> Option<u64> {
+    let rollout_path = lines.iter().find_map(|line| match line {
+        PotterRolloutLine::RoundConfigured { rollout_path, .. } => Some(rollout_path.clone()),
+        _ => None,
+    })?;
+
+    let resolved = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+        workdir,
+        &rollout_path,
+    );
+    read_first_rollout_timestamp_unix_secs(&resolved).ok()
 }
 
 fn project_list_rounds(index: &PotterRolloutResumeIndex) -> u32 {
@@ -789,6 +843,81 @@ original goal line
         let rows = discover_projects_for_overlay(workdir).expect("discover");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, PotterProjectListStatus::Incomplete);
+        assert_eq!(rows[0].rounds, 1);
+        assert_eq!(rows[0].description, "cancelled prompt");
+        assert_eq!(rows[0].started_at_unix_secs, None);
+    }
+
+    #[test]
+    fn discover_projects_best_effort_rounds_and_started_at_when_resume_index_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+
+        let main = write_main(workdir, ".codexpotter/projects/2026/03/02/4", None);
+        let rollout = workdir.join("live.jsonl");
+        write_rollout_with_timestamp(&rollout, "2026-03-02T00:00:00.000Z");
+
+        let potter_rollout_path = main
+            .parent()
+            .expect("project dir")
+            .join(crate::workflow::rollout::POTTER_ROLLOUT_FILENAME);
+        let user_prompt_file = main.strip_prefix(workdir).expect("rel").to_path_buf();
+        let thread_id =
+            codex_protocol::ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c000")
+                .expect("thread id");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::ProjectStarted {
+                user_message: Some("live prompt".to_string()),
+                user_prompt_file,
+            },
+        )
+        .expect("append project_started");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 10,
+            },
+        )
+        .expect("append round_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id,
+                rollout_path: Path::new("live.jsonl").to_path_buf(),
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round_configured");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
+            },
+        )
+        .expect("append round_finished");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 2,
+                total: 10,
+            },
+        )
+        .expect("append round_started");
+
+        let rows = discover_projects_for_overlay(workdir).expect("discover");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, PotterProjectListStatus::Incomplete);
+        assert_eq!(rows[0].rounds, 2);
+        assert_eq!(rows[0].description, "live prompt");
+        assert!(rows[0].started_at_unix_secs.is_some());
     }
 
     #[test]
