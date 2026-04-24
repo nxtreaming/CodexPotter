@@ -1296,7 +1296,7 @@ impl AppServerEventProcessor {
                 self.flush_pending_live_activity_cells();
                 self.flush_pending_compact_patch_changes();
 
-                let label = hook_event_label(ev.run.event_name);
+                let label = ev.run.event_name.as_kebab_case();
                 let mut message = format!("Running {label} hook");
                 if let Some(status_message) = ev.run.status_message
                     && !status_message.is_empty()
@@ -1316,7 +1316,7 @@ impl AppServerEventProcessor {
                 self.flush_pending_compact_patch_changes();
 
                 let status = format!("{:?}", ev.run.status).to_lowercase();
-                let header = format!("{} hook ({status})", hook_event_label(ev.run.event_name));
+                let header = format!("{} hook ({status})", ev.run.event_name.as_kebab_case());
                 let mut lines: Vec<Line<'static>> = vec![header.into()];
                 for entry in ev.run.entries {
                     let prefix = match entry.kind {
@@ -2904,18 +2904,6 @@ impl RenderAppState {
             .percent_of_context_window_remaining(context_window);
         self.bottom_pane
             .set_context_window(Some(percent_left), None);
-    }
-}
-
-fn hook_event_label(event_name: codex_protocol::protocol::HookEventName) -> &'static str {
-    match event_name {
-        codex_protocol::protocol::HookEventName::PreToolUse => "PreToolUse",
-        codex_protocol::protocol::HookEventName::PermissionRequest => "PermissionRequest",
-        codex_protocol::protocol::HookEventName::PostToolUse => "PostToolUse",
-        codex_protocol::protocol::HookEventName::SessionStart => "SessionStart",
-        codex_protocol::protocol::HookEventName::UserPromptSubmit => "UserPromptSubmit",
-        codex_protocol::protocol::HookEventName::Stop => "Stop",
-        codex_protocol::protocol::HookEventName::PotterProjectStop => "Potter.ProjectStop",
     }
 }
 

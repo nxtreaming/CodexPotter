@@ -61,6 +61,8 @@ Divergences must be documented in places below to avoid regression when syncing 
   - renders content similar to interactive mode, respect verbosity, but in append-only way — never folds/coalesces prior output.
   - additionally emits the text of the shimmer when it changes.
   - does not emit the dim `─ Round finished in … ─` separator line.
+- Hook status output uses protocol kebab-case event labels (for example `session-start`) to match
+  exec output and hook run identifiers.
 
 ### Shimmer
 

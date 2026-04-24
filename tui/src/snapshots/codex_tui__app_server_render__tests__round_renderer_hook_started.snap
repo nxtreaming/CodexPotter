@@ -2,4 +2,4 @@
 source: tui/src/app_server_render.rs
 expression: lines_to_plain_text(&cell.display_lines(width))
 ---
-• Running SessionStart hook: Setting up environment
+• Running session-start hook: Setting up environment
