@@ -191,11 +191,6 @@ enum RecoveryAction {
     RetryContinue { attempt: u32 },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct ServerRequestPolicy {
-    bypass_approvals_and_sandbox: bool,
-}
-
 struct StreamRecoveryContext {
     stream_recovery: PotterStreamRecovery,
     recovery_action_tx: UnboundedSender<RecoveryAction>,
@@ -207,7 +202,7 @@ struct StreamRecoveryContext {
     round_started_at: Instant,
     last_turn_start_was_recovery_continue: bool,
     event_mode: AppServerEventMode,
-    server_request_policy: ServerRequestPolicy,
+    bypass_approvals_and_sandbox: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,9 +366,7 @@ async fn run_app_server_backend_inner(
         round_started_at: Instant::now(),
         last_turn_start_was_recovery_continue: false,
         event_mode,
-        server_request_policy: ServerRequestPolicy {
-            bypass_approvals_and_sandbox: launch.bypass_approvals_and_sandbox,
-        },
+        bypass_approvals_and_sandbox: launch.bypass_approvals_and_sandbox,
     };
 
     let result = async {
@@ -694,13 +687,21 @@ fn upstream_client_info_cache() -> &'static Mutex<HashMap<String, ClientInfo>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn lock_upstream_client_info_cache() -> std::sync::MutexGuard<'static, HashMap<String, ClientInfo>>
+{
+    match upstream_client_info_cache().lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            tracing::warn!(
+                "Upstream client info cache mutex poisoned; continuing with inner state."
+            );
+            err.into_inner()
+        }
+    }
+}
+
 async fn resolve_upstream_client_info(codex_bin: &str) -> ClientInfo {
-    if let Some(client_info) = upstream_client_info_cache()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .get(codex_bin)
-        .cloned()
-    {
+    if let Some(client_info) = lock_upstream_client_info_cache().get(codex_bin).cloned() {
         return client_info;
     }
 
@@ -723,10 +724,7 @@ async fn resolve_upstream_client_info(codex_bin: &str) -> ClientInfo {
             };
         }
     };
-    upstream_client_info_cache()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .insert(codex_bin.to_string(), client_info.clone());
+    lock_upstream_client_info_cache().insert(codex_bin.to_string(), client_info.clone());
     client_info
 }
 
@@ -2301,7 +2299,7 @@ async fn handle_server_request(
         }
     };
 
-    let bypass_approvals_and_sandbox = recovery.server_request_policy.bypass_approvals_and_sandbox;
+    let bypass_approvals_and_sandbox = recovery.bypass_approvals_and_sandbox;
     let active_turn_id = recovery.active_turn_id.clone();
     let resolve_event_id = |turn_id: Option<&str>| {
         turn_id
@@ -2764,7 +2762,7 @@ mod stream_recovery_tests {
             round_started_at: Instant::now(),
             last_turn_start_was_recovery_continue: false,
             event_mode,
-            server_request_policy: ServerRequestPolicy::default(),
+            bypass_approvals_and_sandbox: false,
         };
 
         RecoveryHarness {
@@ -3350,7 +3348,7 @@ mod tests {
             round_started_at: Instant::now(),
             last_turn_start_was_recovery_continue: false,
             event_mode,
-            server_request_policy: ServerRequestPolicy::default(),
+            bypass_approvals_and_sandbox: false,
         }
     }
 
