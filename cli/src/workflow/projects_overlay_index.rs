@@ -25,8 +25,8 @@ struct DiscoveredOverlayProject {
 
 /// Discover CodexPotter project progress files under `workdir` and build overlay list entries.
 ///
-/// Discovery is best-effort: malformed or incomplete projects remain renderable, with abandoned
-/// first rounds classified as `Cancelled` when no round ever completed.
+/// Discovery is best-effort: malformed or incomplete projects remain renderable. Only explicit
+/// terminal outcomes before any completed round are classified as `Cancelled`.
 pub fn discover_projects_for_overlay(
     workdir: &Path,
 ) -> anyhow::Result<Vec<PotterProjectListEntry>> {
@@ -152,10 +152,7 @@ fn project_list_status(index: &PotterRolloutResumeIndex) -> PotterProjectListSta
         .any(|round| matches!(round.outcome, PotterRoundOutcome::Completed));
 
     if index.unfinished_round.is_some() {
-        if has_completed_round {
-            return PotterProjectListStatus::Incomplete;
-        }
-        return PotterProjectListStatus::Cancelled;
+        return PotterProjectListStatus::Incomplete;
     }
 
     let Some(last_round) = index.completed_rounds.last() else {
@@ -201,9 +198,15 @@ fn best_effort_project_list_status(lines: &[PotterRolloutLine]) -> PotterProject
         )
     });
     if !has_completed_round
-        && lines
-            .iter()
-            .any(|line| matches!(line, PotterRolloutLine::ProjectStarted { .. }))
+        && lines.iter().any(|line| {
+            matches!(
+                line,
+                PotterRolloutLine::RoundFinished {
+                    outcome: PotterRoundOutcome::Interrupted | PotterRoundOutcome::UserRequested,
+                    ..
+                }
+            )
+        })
     {
         return PotterProjectListStatus::Cancelled;
     }
@@ -703,7 +706,7 @@ original goal line
     }
 
     #[test]
-    fn discover_projects_marks_unfinished_first_round_as_cancelled() {
+    fn discover_projects_keeps_unfinished_first_round_incomplete() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workdir = temp.path();
 
@@ -750,12 +753,12 @@ original goal line
 
         let rows = discover_projects_for_overlay(workdir).expect("discover");
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].status, PotterProjectListStatus::Cancelled);
+        assert_eq!(rows[0].status, PotterProjectListStatus::Incomplete);
         assert_eq!(rows[0].rounds, 1);
     }
 
     #[test]
-    fn discover_projects_marks_malformed_first_round_without_completion_as_cancelled() {
+    fn discover_projects_keeps_malformed_unfinished_first_round_incomplete() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workdir = temp.path();
 
@@ -785,7 +788,7 @@ original goal line
 
         let rows = discover_projects_for_overlay(workdir).expect("discover");
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].status, PotterProjectListStatus::Cancelled);
+        assert_eq!(rows[0].status, PotterProjectListStatus::Incomplete);
     }
 
     #[test]
