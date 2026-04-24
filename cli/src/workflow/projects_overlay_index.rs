@@ -230,12 +230,14 @@ fn best_effort_project_user_message(lines: &[PotterRolloutLine]) -> Option<&str>
 }
 
 fn best_effort_project_list_rounds(lines: &[PotterRolloutLine]) -> u32 {
+    let mut started_rounds: u32 = 0;
     let mut max_started_round = 0;
     let mut finished_rounds: u32 = 0;
 
     for line in lines {
         match line {
             PotterRolloutLine::RoundStarted { current, .. } => {
+                started_rounds = started_rounds.saturating_add(1);
                 max_started_round = max_started_round.max(*current);
             }
             PotterRolloutLine::RoundFinished { .. } => {
@@ -245,8 +247,8 @@ fn best_effort_project_list_rounds(lines: &[PotterRolloutLine]) -> u32 {
         }
     }
 
-    if max_started_round > 0 {
-        max_started_round
+    if started_rounds > 0 {
+        started_rounds.max(max_started_round)
     } else {
         finished_rounds
     }
@@ -911,11 +913,68 @@ original goal line
             },
         )
         .expect("append round_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id,
+                rollout_path: Path::new("live.jsonl").to_path_buf(),
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round_configured");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
+            },
+        )
+        .expect("append round_finished");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 3,
+                total: 10,
+            },
+        )
+        .expect("append round_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id,
+                rollout_path: Path::new("live.jsonl").to_path_buf(),
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round_configured");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
+            },
+        )
+        .expect("append round_finished");
+
+        // Resumed window: round indices reset, but the total rounds should keep growing.
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 10,
+            },
+        )
+        .expect("append round_started");
 
         let rows = discover_projects_for_overlay(workdir).expect("discover");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, PotterProjectListStatus::Incomplete);
-        assert_eq!(rows[0].rounds, 2);
+        assert_eq!(rows[0].rounds, 4);
         assert_eq!(rows[0].description, "live prompt");
         assert!(rows[0].started_at_unix_secs.is_some());
     }
