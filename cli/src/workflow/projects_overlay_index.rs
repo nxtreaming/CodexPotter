@@ -14,6 +14,7 @@ use codex_protocol::protocol::PotterProjectListEntry;
 use codex_protocol::protocol::PotterProjectListStatus;
 use codex_protocol::protocol::PotterRoundOutcome;
 
+use crate::workflow::rollout::PotterRolloutLine;
 use crate::workflow::rollout_resume_index::PotterRolloutResumeIndex;
 
 #[derive(Debug)]
@@ -24,8 +25,8 @@ struct DiscoveredOverlayProject {
 
 /// Discover CodexPotter project progress files under `workdir` and build overlay list entries.
 ///
-/// Discovery is best-effort: malformed or incomplete projects are treated as `Incomplete` so the
-/// overlay can still render the remaining items.
+/// Discovery is best-effort: malformed or incomplete projects remain renderable, with abandoned
+/// first rounds classified as `Cancelled` when no round ever completed.
 pub fn discover_projects_for_overlay(
     workdir: &Path,
 ) -> anyhow::Result<Vec<PotterProjectListEntry>> {
@@ -93,6 +94,10 @@ fn project_entry_for_progress_file(
 
     let Some(index) = resume_index else {
         let description = read_project_description(progress_file_abs, None).unwrap_or_default();
+        let status = rollout_lines
+            .as_deref()
+            .map(best_effort_project_list_status)
+            .unwrap_or(PotterProjectListStatus::Incomplete);
         return Ok(DiscoveredOverlayProject {
             row: PotterProjectListEntry {
                 project_dir,
@@ -100,7 +105,7 @@ fn project_entry_for_progress_file(
                 description,
                 started_at_unix_secs: None,
                 rounds: 0,
-                status: PotterProjectListStatus::Incomplete,
+                status,
             },
             resume_index: None,
         });
@@ -141,20 +146,21 @@ fn project_list_status(index: &PotterRolloutResumeIndex) -> PotterProjectListSta
         return PotterProjectListStatus::Succeeded;
     }
 
+    let has_completed_round = index
+        .completed_rounds
+        .iter()
+        .any(|round| matches!(round.outcome, PotterRoundOutcome::Completed));
+
     if index.unfinished_round.is_some() {
-        // EOF with an unfinished round means the project has started a live round but has not
-        // emitted `RoundFinished` yet. That is not the same thing as an explicit user interrupt.
-        return PotterProjectListStatus::Incomplete;
+        if has_completed_round {
+            return PotterProjectListStatus::Incomplete;
+        }
+        return PotterProjectListStatus::Cancelled;
     }
 
     let Some(last_round) = index.completed_rounds.last() else {
         return PotterProjectListStatus::Incomplete;
     };
-
-    let has_completed_round = index
-        .completed_rounds
-        .iter()
-        .any(|round| matches!(round.outcome, PotterRoundOutcome::Completed));
 
     match &last_round.outcome {
         PotterRoundOutcome::Completed => {
@@ -175,6 +181,34 @@ fn project_list_status(index: &PotterRolloutResumeIndex) -> PotterProjectListSta
             PotterProjectListStatus::Failed
         }
     }
+}
+
+fn best_effort_project_list_status(lines: &[PotterRolloutLine]) -> PotterProjectListStatus {
+    if lines
+        .iter()
+        .any(|line| matches!(line, PotterRolloutLine::ProjectSucceeded { .. }))
+    {
+        return PotterProjectListStatus::Succeeded;
+    }
+
+    let has_completed_round = lines.iter().any(|line| {
+        matches!(
+            line,
+            PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+                ..
+            }
+        )
+    });
+    if !has_completed_round
+        && lines
+            .iter()
+            .any(|line| matches!(line, PotterRolloutLine::ProjectStarted { .. }))
+    {
+        return PotterProjectListStatus::Cancelled;
+    }
+
+    PotterProjectListStatus::Incomplete
 }
 
 fn project_list_rounds(index: &PotterRolloutResumeIndex) -> u32 {
@@ -666,6 +700,92 @@ original goal line
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, PotterProjectListStatus::Incomplete);
         assert_eq!(rows[0].rounds, 2);
+    }
+
+    #[test]
+    fn discover_projects_marks_unfinished_first_round_as_cancelled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+
+        let main = write_main(workdir, ".codexpotter/projects/2026/03/02/2", None);
+        let rollout = workdir.join("cancelled.jsonl");
+        write_rollout_with_timestamp(&rollout, "2026-03-02T00:00:00.000Z");
+
+        let potter_rollout_path = main
+            .parent()
+            .expect("project dir")
+            .join(crate::workflow::rollout::POTTER_ROLLOUT_FILENAME);
+        let user_prompt_file = main.strip_prefix(workdir).expect("rel").to_path_buf();
+        let thread_id =
+            codex_protocol::ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c000")
+                .expect("thread id");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::ProjectStarted {
+                user_message: Some("cancelled prompt".to_string()),
+                user_prompt_file,
+            },
+        )
+        .expect("append project_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 10,
+            },
+        )
+        .expect("append round_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id,
+                rollout_path: Path::new("cancelled.jsonl").to_path_buf(),
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round_configured");
+
+        let rows = discover_projects_for_overlay(workdir).expect("discover");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, PotterProjectListStatus::Cancelled);
+        assert_eq!(rows[0].rounds, 1);
+    }
+
+    #[test]
+    fn discover_projects_marks_malformed_first_round_without_completion_as_cancelled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+
+        let main = write_main(workdir, ".codexpotter/projects/2026/03/02/3", None);
+        let potter_rollout_path = main
+            .parent()
+            .expect("project dir")
+            .join(crate::workflow::rollout::POTTER_ROLLOUT_FILENAME);
+        let user_prompt_file = main.strip_prefix(workdir).expect("rel").to_path_buf();
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::ProjectStarted {
+                user_message: Some("cancelled prompt".to_string()),
+                user_prompt_file,
+            },
+        )
+        .expect("append project_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 10,
+            },
+        )
+        .expect("append round_started");
+
+        let rows = discover_projects_for_overlay(workdir).expect("discover");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, PotterProjectListStatus::Cancelled);
     }
 
     #[test]
