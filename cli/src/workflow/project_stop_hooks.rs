@@ -20,6 +20,29 @@ struct PreparedProjectStopHookRequest {
     warnings: Vec<String>,
 }
 
+fn read_final_assistant_message_for_hook(
+    workdir: &Path,
+    rollout_path: &Path,
+    round_label: &str,
+    round_current: u32,
+    warnings: &mut Vec<String>,
+) -> String {
+    let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+        workdir,
+        rollout_path,
+    );
+    match crate::workflow::projects_overlay_details::read_final_agent_message_from_rollout(&abs) {
+        Ok((_, message)) => message.unwrap_or_default(),
+        Err(err) => {
+            warnings.push(format!(
+                "Potter.ProjectStop hooks: failed to read final assistant message for {round_label} {round_current} from rollout {}: {err:#}",
+                abs.display()
+            ));
+            String::new()
+        }
+    }
+}
+
 /// Stable stop-reason categories surfaced to `Potter.ProjectStop` hooks.
 ///
 /// This is intentionally narrower than `PotterProjectOutcome`: hook payloads need only the stable
@@ -62,27 +85,6 @@ fn prepare_project_stop_hook_request(
     let mut completed_assistant_messages = Vec::new();
     let mut warnings = Vec::new();
 
-    let read_round_message = |round_label: &str,
-                              round_current: u32,
-                              rollout_path: &Path,
-                              warnings: &mut Vec<String>| {
-        let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
-            workdir,
-            rollout_path,
-        );
-        match crate::workflow::projects_overlay_details::read_final_agent_message_from_rollout(&abs)
-        {
-            Ok((_, message)) => message.unwrap_or_default(),
-            Err(err) => {
-                warnings.push(format!(
-                    "Potter.ProjectStop hooks: failed to read final assistant message for {round_label} {round_current} from rollout {}: {err:#}",
-                    abs.display()
-                ));
-                String::new()
-            }
-        }
-    };
-
     for round in &index.completed_rounds {
         let (thread_id, rollout_path) = match &round.configured {
             Some(cfg) => (Some(cfg.thread_id), Some(&cfg.rollout_path)),
@@ -98,9 +100,13 @@ fn prepare_project_stop_hook_request(
         completed_session_ids.push(thread_id.map(|id| id.to_string()).unwrap_or_default());
 
         let message = match rollout_path {
-            Some(rollout_path) => {
-                read_round_message("round", round.round_current, rollout_path, &mut warnings)
-            }
+            Some(rollout_path) => read_final_assistant_message_for_hook(
+                workdir,
+                rollout_path,
+                "round",
+                round.round_current,
+                &mut warnings,
+            ),
             None => String::new(),
         };
         completed_assistant_messages.push(message);
@@ -123,10 +129,11 @@ fn prepare_project_stop_hook_request(
     let mut all_assistant_messages = completed_assistant_messages;
     if let Some(unfinished) = &index.unfinished_round {
         all_session_ids.push(unfinished.thread_id.to_string());
-        let message = read_round_message(
+        let message = read_final_assistant_message_for_hook(
+            workdir,
+            &unfinished.rollout_path,
             "unfinished round",
             unfinished.round_current,
-            &unfinished.rollout_path,
             &mut warnings,
         );
         all_assistant_messages.push(message);
