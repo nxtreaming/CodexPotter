@@ -2112,6 +2112,21 @@ impl RenderAppState {
             if !is_press {
                 return;
             }
+            if self.bottom_pane.composer().selection_popup_visible() {
+                let (_result, needs_redraw) =
+                    self.bottom_pane.composer_mut().handle_key_event(key_event);
+                if needs_redraw {
+                    frame_requester.schedule_frame();
+                }
+                return;
+            }
+
+            if !self.bottom_pane.composer().is_empty() {
+                self.bottom_pane.composer_mut().clear_for_ctrl_c();
+                frame_requester.schedule_frame();
+                return;
+            }
+
             if self.codex_op_tx.is_some() && self.bottom_pane.is_task_running() {
                 if self.bottom_pane.composer().popup_active() {
                     let (_result, needs_redraw) = self.bottom_pane.composer_mut().handle_key_event(
@@ -2129,34 +2144,23 @@ impl RenderAppState {
                 }
                 return;
             }
-            if self.bottom_pane.composer().selection_popup_visible() {
-                let (_result, needs_redraw) =
-                    self.bottom_pane.composer_mut().handle_key_event(key_event);
-                if needs_redraw {
-                    frame_requester.schedule_frame();
-                }
-                return;
-            }
-            if self.bottom_pane.composer().is_empty() {
-                if self.codex_op_tx.is_none() {
-                    self.prompt_action = Some(PromptScreenAction::CancelledByUser);
-                } else {
-                    // Preserve any live output in the transcript before clearing the inline
-                    // viewport on exit.
-                    self.processor.flush_live_transcript_buffers();
 
-                    self.app_event_tx.send(AppEvent::CodexOp(Op::Interrupt));
-
-                    // Treat Ctrl+C as an explicit user cancellation, even if the turn just
-                    // finished, so callers can stop multi-round loops reliably.
-                    if !matches!(self.exit_reason, ExitReason::Fatal(_)) {
-                        self.exit_reason = ExitReason::UserRequested;
-                        self.exit_requested_by_user = true;
-                    }
-                    self.exit_after_next_draw = true;
-                }
+            if self.codex_op_tx.is_none() {
+                self.prompt_action = Some(PromptScreenAction::CancelledByUser);
             } else {
-                self.bottom_pane.composer_mut().clear_for_ctrl_c();
+                // Preserve any live output in the transcript before clearing the inline
+                // viewport on exit.
+                self.processor.flush_live_transcript_buffers();
+
+                self.app_event_tx.send(AppEvent::CodexOp(Op::Interrupt));
+
+                // Treat Ctrl+C as an explicit user cancellation, even if the turn just
+                // finished, so callers can stop multi-round loops reliably.
+                if !matches!(self.exit_reason, ExitReason::Fatal(_)) {
+                    self.exit_reason = ExitReason::UserRequested;
+                    self.exit_requested_by_user = true;
+                }
+                self.exit_after_next_draw = true;
             }
             frame_requester.schedule_frame();
             return;
@@ -5397,7 +5401,7 @@ mod tests {
     }
 
     #[test]
-    fn round_renderer_ctrl_c_preserves_draft_when_interrupting_task() {
+    fn round_renderer_ctrl_c_clears_draft_instead_of_interrupting_task() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -5413,10 +5417,14 @@ mod tests {
             80,
         );
 
-        assert_eq!(
-            app.bottom_pane.composer().current_text(),
-            "queued draft",
-            "Ctrl+C should match Esc and leave the draft untouched while interrupting"
+        assert!(
+            app.bottom_pane.composer().is_empty(),
+            "expected Ctrl+C to clear the draft when non-empty"
+        );
+
+        assert!(
+            !app.exit_after_next_draw,
+            "did not expect Ctrl+C to exit when clearing draft"
         );
 
         let mut saw_interrupt = false;
@@ -5427,8 +5435,8 @@ mod tests {
             }
         }
         assert!(
-            saw_interrupt,
-            "expected Ctrl+C to request Op::Interrupt while preserving the draft"
+            !saw_interrupt,
+            "did not expect Ctrl+C to request Op::Interrupt when clearing draft"
         );
     }
 
@@ -5459,8 +5467,24 @@ mod tests {
             "did not expect Ctrl+C to request exit while a popup is visible"
         );
         assert!(
-            rx_app.try_recv().is_err(),
-            "Ctrl+C should follow Esc popup routing instead of interrupting"
+            app.bottom_pane.composer().is_empty(),
+            "expected Ctrl+C to clear the draft and dismiss the popup"
+        );
+        assert!(
+            !app.bottom_pane.composer().popup_active(),
+            "expected Ctrl+C to dismiss the popup when clearing draft"
+        );
+
+        let mut saw_interrupt = false;
+        while let Ok(ev) = rx_app.try_recv() {
+            if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                saw_interrupt = true;
+                break;
+            }
+        }
+        assert!(
+            !saw_interrupt,
+            "did not expect Ctrl+C to request Op::Interrupt while clearing a popup draft"
         );
     }
 
