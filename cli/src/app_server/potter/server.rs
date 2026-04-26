@@ -2165,9 +2165,6 @@ mod tests {
     use crate::app_server::test_support::write_project_stop_hook_capture;
     use crate::workflow::round_runner::PotterRoundUi;
     use pretty_assertions::assert_eq;
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
     use tokio::sync::mpsc::UnboundedReceiver;
 
     fn write_progress_file_fixture(
@@ -2328,15 +2325,7 @@ git_branch: "main"
         const BACKLOG_EVENTS: usize = 1024;
         const INTERRUPT_TRIGGER: usize = 256;
 
-        let forwarded = Arc::new(AtomicUsize::new(0));
-
-        let (writer_tx, mut writer_rx) = unbounded_channel::<JSONRPCMessage>();
-        let forwarded_writer = Arc::clone(&forwarded);
-        let writer = tokio::spawn(async move {
-            while writer_rx.recv().await.is_some() {
-                forwarded_writer.fetch_add(1, Ordering::Relaxed);
-            }
-        });
+        let (writer_tx, writer_rx) = unbounded_channel::<JSONRPCMessage>();
 
         let (interrupt_tx, interrupt_rx) = watch::channel(false);
 
@@ -2360,15 +2349,6 @@ git_branch: "main"
                         .expect("send backlog event");
                 }
 
-                let interrupt_tx = interrupt_tx.clone();
-                let forwarded_for_interrupt = Arc::clone(&forwarded);
-                tokio::task::spawn_local(async move {
-                    while forwarded_for_interrupt.load(Ordering::Relaxed) < INTERRUPT_TRIGGER {
-                        tokio::task::yield_now().await;
-                    }
-                    let _ = interrupt_tx.send(true);
-                });
-
                 let prompt_footer =
                     codex_tui::PromptFooterContext::new(PathBuf::from("/tmp"), None);
                 let render = tokio::task::spawn_local(async move {
@@ -2390,10 +2370,15 @@ git_branch: "main"
                     other => panic!("expected Op::UserInput first, got {other:?}"),
                 }
 
+                while writer_rx.len() < INTERRUPT_TRIGGER {
+                    tokio::task::yield_now().await;
+                }
+                interrupt_tx.send(true).expect("send interrupt");
+
                 loop {
                     match op_rx.recv().await {
                         Some(codex_protocol::protocol::Op::Interrupt) => {
-                            let forwarded = forwarded.load(Ordering::Relaxed);
+                            let forwarded = writer_rx.len();
                             render.abort();
                             let _ = render.await;
                             return forwarded;
@@ -2409,8 +2394,6 @@ git_branch: "main"
             forwarded_before_interrupt < BACKLOG_EVENTS,
             "expected interrupt before forwarding all events, forwarded={forwarded_before_interrupt} backlog={BACKLOG_EVENTS}",
         );
-
-        let _ = writer.await;
     }
 
     #[test]
