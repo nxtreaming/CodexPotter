@@ -2054,6 +2054,8 @@ impl crate::workflow::round_runner::PotterRoundUi for EventForwardingRoundUi {
             }
 
             loop {
+                const COOPERATIVE_DRAIN_BATCH: usize = 32;
+                let mut drained = 0usize;
                 while let Ok(event) = codex_event_rx.try_recv() {
                     self.forward_event(&event);
                     if let EventMsg::PotterRoundFinished { outcome, .. } = &event.msg {
@@ -2062,6 +2064,17 @@ impl crate::workflow::round_runner::PotterRoundUi for EventForwardingRoundUi {
                             thread_id: self.thread_id,
                             exit_reason: exit_reason_from_outcome(outcome),
                         });
+                    }
+
+                    if !interrupt_sent && *self.interrupt_rx.borrow() {
+                        let _ = codex_op_tx.send(codex_protocol::protocol::Op::Interrupt);
+                        interrupt_sent = true;
+                    }
+
+                    drained += 1;
+                    if drained >= COOPERATIVE_DRAIN_BATCH {
+                        drained = 0;
+                        tokio::task::yield_now().await;
                     }
                 }
 
@@ -2150,7 +2163,11 @@ mod tests {
     use crate::app_server::test_support::write_dummy_codex_script;
     #[cfg(unix)]
     use crate::app_server::test_support::write_project_stop_hook_capture;
+    use crate::workflow::round_runner::PotterRoundUi;
     use pretty_assertions::assert_eq;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use tokio::sync::mpsc::UnboundedReceiver;
 
     fn write_progress_file_fixture(
@@ -2304,6 +2321,96 @@ git_branch: "main"
             Some(true)
         );
         assert!(migrated_doc.get("potter").is_none());
+    }
+
+    #[tokio::test]
+    async fn event_forwarding_round_ui_sends_interrupt_before_draining_all_events() {
+        const BACKLOG_EVENTS: usize = 1024;
+        const INTERRUPT_TRIGGER: usize = 256;
+
+        let forwarded = Arc::new(AtomicUsize::new(0));
+
+        let (writer_tx, mut writer_rx) = unbounded_channel::<JSONRPCMessage>();
+        let forwarded_writer = Arc::clone(&forwarded);
+        let writer = tokio::spawn(async move {
+            while writer_rx.recv().await.is_some() {
+                forwarded_writer.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        let (interrupt_tx, interrupt_rx) = watch::channel(false);
+
+        let forwarded_before_interrupt = tokio::task::LocalSet::new()
+            .run_until(async move {
+                let mut ui = EventForwardingRoundUi::new(writer_tx, interrupt_rx);
+
+                let (op_tx, mut op_rx) = unbounded_channel::<codex_protocol::protocol::Op>();
+                let (event_tx, event_rx) = unbounded_channel::<Event>();
+                let (_fatal_tx, fatal_rx) = unbounded_channel::<String>();
+
+                for _ in 0..BACKLOG_EVENTS {
+                    event_tx
+                        .send(Event {
+                            id: String::new(),
+                            msg: EventMsg::PotterRoundStarted {
+                                current: 1,
+                                total: 1,
+                            },
+                        })
+                        .expect("send backlog event");
+                }
+
+                let interrupt_tx = interrupt_tx.clone();
+                let forwarded_for_interrupt = Arc::clone(&forwarded);
+                tokio::task::spawn_local(async move {
+                    while forwarded_for_interrupt.load(Ordering::Relaxed) < INTERRUPT_TRIGGER {
+                        tokio::task::yield_now().await;
+                    }
+                    let _ = interrupt_tx.send(true);
+                });
+
+                let prompt_footer =
+                    codex_tui::PromptFooterContext::new(PathBuf::from("/tmp"), None);
+                let render = tokio::task::spawn_local(async move {
+                    ui.render_round(codex_tui::RenderRoundParams {
+                        prompt: "test".to_string(),
+                        pad_before_first_cell: false,
+                        status_header_prefix: None,
+                        prompt_footer,
+                        codex_op_tx: op_tx,
+                        codex_event_rx: event_rx,
+                        fatal_exit_rx: fatal_rx,
+                        projects_overlay_provider: None,
+                    })
+                    .await
+                });
+
+                match op_rx.recv().await {
+                    Some(codex_protocol::protocol::Op::UserInput { .. }) => {}
+                    other => panic!("expected Op::UserInput first, got {other:?}"),
+                }
+
+                loop {
+                    match op_rx.recv().await {
+                        Some(codex_protocol::protocol::Op::Interrupt) => {
+                            let forwarded = forwarded.load(Ordering::Relaxed);
+                            render.abort();
+                            let _ = render.await;
+                            return forwarded;
+                        }
+                        Some(_) => {}
+                        None => panic!("op channel closed before interrupt"),
+                    }
+                }
+            })
+            .await;
+
+        assert!(
+            forwarded_before_interrupt < BACKLOG_EVENTS,
+            "expected interrupt before forwarding all events, forwarded={forwarded_before_interrupt} backlog={BACKLOG_EVENTS}",
+        );
+
+        let _ = writer.await;
     }
 
     #[test]
