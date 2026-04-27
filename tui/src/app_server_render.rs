@@ -1546,7 +1546,7 @@ struct RenderAppState {
     file_search: FileSearchManager,
     queued_user_messages: VecDeque<String>,
     reasoning_status: ReasoningStatusTracker,
-    unified_exec_commands: HashMap<String, String>,
+    unified_exec_processes: Vec<UnifiedExecProcessSummary>,
     unified_exec_wait: Option<UnifiedExecWaitStatus>,
     stream_error_status_header: Option<String>,
     potter_stream_recovery_retry_cell: Option<PotterStreamRecoveryRetryCell>,
@@ -1555,6 +1555,12 @@ struct RenderAppState {
     exit_after_next_draw: bool,
     exit_requested_by_user: bool,
     exit_reason: ExitReason,
+}
+
+#[derive(Debug, Clone)]
+struct UnifiedExecProcessSummary {
+    key: String,
+    command_display: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1588,7 +1594,7 @@ impl RenderAppState {
             file_search,
             queued_user_messages,
             reasoning_status: ReasoningStatusTracker::new(),
-            unified_exec_commands: HashMap::new(),
+            unified_exec_processes: Vec::new(),
             unified_exec_wait: None,
             stream_error_status_header: None,
             potter_stream_recovery_retry_cell: None,
@@ -2813,12 +2819,34 @@ impl RenderAppState {
         if ev.source != codex_protocol::protocol::ExecCommandSource::UnifiedExecStartup {
             return;
         }
-        let Some(process_id) = &ev.process_id else {
-            return;
-        };
+        let key = ev.process_id.clone().unwrap_or_else(|| ev.call_id.clone());
+        let command_display = strip_bash_lc_and_escape(&ev.command);
+        if let Some(existing) = self
+            .unified_exec_processes
+            .iter_mut()
+            .find(|process| process.key == key)
+        {
+            existing.command_display = command_display.clone();
+        } else {
+            self.unified_exec_processes.push(UnifiedExecProcessSummary {
+                key: key.clone(),
+                command_display: command_display.clone(),
+            });
+        }
+        self.sync_unified_exec_footer();
 
-        self.unified_exec_commands
-            .insert(process_id.clone(), strip_bash_lc_and_escape(&ev.command));
+        if self
+            .unified_exec_wait
+            .as_ref()
+            .is_some_and(|wait| wait.process_id == key)
+        {
+            self.bottom_pane.update_status_header_with_details_options(
+                String::from("Waiting for background terminal"),
+                Some(command_display),
+                super::status_indicator_widget::StatusDetailsCapitalization::Preserve,
+                /*max_lines*/ 1,
+            );
+        }
     }
 
     fn show_unified_exec_wait(&mut self, ev: &codex_protocol::protocol::TerminalInteractionEvent) {
@@ -2835,9 +2863,16 @@ impl RenderAppState {
             process_id: ev.process_id.clone(),
             previous_header,
         });
-        self.bottom_pane.update_status_header_with_details(
+        let command_display = self
+            .unified_exec_processes
+            .iter()
+            .find(|process| process.key == ev.process_id)
+            .map(|process| process.command_display.clone());
+        self.bottom_pane.update_status_header_with_details_options(
             String::from("Waiting for background terminal"),
-            self.unified_exec_commands.get(&ev.process_id).cloned(),
+            command_display,
+            super::status_indicator_widget::StatusDetailsCapitalization::Preserve,
+            /*max_lines*/ 1,
         );
     }
 
@@ -2859,24 +2894,41 @@ impl RenderAppState {
 
     fn clear_unified_exec_state(&mut self) {
         self.restore_status_after_unified_exec_wait();
-        self.unified_exec_commands.clear();
+        self.unified_exec_processes.clear();
+        self.sync_unified_exec_footer();
     }
 
     fn handle_exec_command_end_status(
         &mut self,
         ev: &codex_protocol::protocol::ExecCommandEndEvent,
     ) {
-        let Some(process_id) = &ev.process_id else {
+        if ev.source != codex_protocol::protocol::ExecCommandSource::UnifiedExecStartup {
             return;
-        };
+        }
+
+        let key = ev.process_id.clone().unwrap_or_else(|| ev.call_id.clone());
         if self
             .unified_exec_wait
             .as_ref()
-            .is_some_and(|wait| wait.process_id == *process_id)
+            .is_some_and(|wait| wait.process_id == key)
         {
             self.restore_status_after_unified_exec_wait();
         }
-        self.unified_exec_commands.remove(process_id);
+        let before = self.unified_exec_processes.len();
+        self.unified_exec_processes
+            .retain(|process| process.key != key);
+        if before != self.unified_exec_processes.len() {
+            self.sync_unified_exec_footer();
+        }
+    }
+
+    fn sync_unified_exec_footer(&mut self) {
+        let processes = self
+            .unified_exec_processes
+            .iter()
+            .map(|process| process.command_display.clone())
+            .collect();
+        self.bottom_pane.set_unified_exec_processes(processes);
     }
 
     fn update_bottom_pane_context_window(&mut self) {
@@ -3653,7 +3705,11 @@ mod tests {
 
         let status = app.bottom_pane.status_widget().expect("status indicator");
         pretty_assertions::assert_eq!(status.header(), "Waiting for background terminal");
-        pretty_assertions::assert_eq!(status.details(), Some("Sleep 5"));
+        pretty_assertions::assert_eq!(status.details(), Some("sleep 5"));
+        pretty_assertions::assert_eq!(
+            status.inline_message(),
+            Some("1 background terminal running · /ps to view · /stop to close")
+        );
 
         app.handle_codex_event(
             crate::tui::FrameRequester::test_dummy(),
@@ -3682,6 +3738,7 @@ mod tests {
         let status = app.bottom_pane.status_widget().expect("status indicator");
         pretty_assertions::assert_eq!(status.header(), "Inspecting for background shell");
         pretty_assertions::assert_eq!(status.details(), None);
+        pretty_assertions::assert_eq!(status.inline_message(), None);
 
         let _cells = drain_history_cell_strings(&mut rx_app, width);
     }

@@ -25,6 +25,7 @@ mod selection_popup_common;
 mod skill_popup;
 mod slash_commands;
 mod textarea;
+mod unified_exec_footer;
 mod word_boundary;
 
 pub use chat_composer::ChatComposer;
@@ -51,9 +52,12 @@ use ratatui::layout::Rect;
 
 use crate::app_event_sender::AppEventSender;
 use crate::render::renderable::Renderable;
+use crate::status_indicator_widget::STATUS_DETAILS_DEFAULT_MAX_LINES;
+use crate::status_indicator_widget::StatusDetailsCapitalization;
 use crate::status_indicator_widget::StatusIndicatorWidget;
 use crate::tui::FrameRequester;
 use prompt_footer::render_prompt_footer;
+use unified_exec_footer::UnifiedExecFooter;
 
 /// How long the "press again to quit" hint stays visible.
 #[cfg(test)]
@@ -82,6 +86,9 @@ pub struct BottomPane {
     status_header_prefix: Option<String>,
     project_started_at: Option<Instant>,
     status_details: Option<String>,
+    status_details_capitalization: StatusDetailsCapitalization,
+    status_details_max_lines: usize,
+    unified_exec_footer: UnifiedExecFooter,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
 
@@ -119,6 +126,9 @@ impl BottomPane {
             status_header_prefix: None,
             project_started_at: None,
             status_details: None,
+            status_details_capitalization: StatusDetailsCapitalization::CapitalizeFirst,
+            status_details_max_lines: STATUS_DETAILS_DEFAULT_MAX_LINES,
+            unified_exec_footer: UnifiedExecFooter::new(),
             context_window_percent: None,
             context_window_used_tokens: None,
             queued_user_messages: QueuedUserMessages::new(),
@@ -185,13 +195,35 @@ impl BottomPane {
     }
 
     pub fn update_status_header_with_details(&mut self, header: String, details: Option<String>) {
+        self.update_status_header_with_details_options(
+            header,
+            details,
+            StatusDetailsCapitalization::CapitalizeFirst,
+            STATUS_DETAILS_DEFAULT_MAX_LINES,
+        );
+    }
+
+    pub fn update_status_header_with_details_options(
+        &mut self,
+        header: String,
+        details: Option<String>,
+        capitalization: StatusDetailsCapitalization,
+        max_lines: usize,
+    ) {
         self.status_header = header;
         self.status_details = details.filter(|details| !details.trim().is_empty());
+        self.status_details_capitalization = capitalization;
+        self.status_details_max_lines = max_lines.max(1);
 
         if let Some(status) = self.status.as_mut() {
             status.update_header_prefix(self.status_header_prefix.clone());
             status.update_header(self.status_header.clone());
-            status.update_details(self.status_details.clone());
+            status.update_details(
+                self.status_details.clone(),
+                self.status_details_capitalization,
+                self.status_details_max_lines,
+            );
+            status.update_inline_message(self.unified_exec_footer.summary_text());
         }
 
         self.request_redraw();
@@ -263,11 +295,29 @@ impl BottomPane {
         status.update_header_prefix(self.status_header_prefix.clone());
         status.set_header_prefix_elapsed_start(self.project_started_at);
         status.update_header(self.status_header.clone());
-        status.update_details(self.status_details.clone());
+        status.update_details(
+            self.status_details.clone(),
+            self.status_details_capitalization,
+            self.status_details_max_lines,
+        );
+        status.update_inline_message(self.unified_exec_footer.summary_text());
         status.set_context_window_visible(true);
         status.set_context_window_percent(self.context_window_percent);
         status.set_context_window_used_tokens(self.context_window_used_tokens);
         status
+    }
+
+    pub fn set_unified_exec_processes(&mut self, processes: Vec<String>) {
+        if self.unified_exec_footer.set_processes(processes) {
+            self.sync_status_inline_message();
+            self.request_redraw();
+        }
+    }
+
+    fn sync_status_inline_message(&mut self) {
+        if let Some(status) = self.status.as_mut() {
+            status.update_inline_message(self.unified_exec_footer.summary_text());
+        }
     }
 
     fn request_redraw(&self) {

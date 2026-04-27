@@ -23,6 +23,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::WidgetRef;
 use unicode_width::UnicodeWidthStr;
 
+use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::render::renderable::Renderable;
 use crate::status_line::StatusLine;
 use crate::status_line::render_status_line;
@@ -31,8 +32,14 @@ use crate::tui::FrameRequester;
 use crate::wrapping::RtOptions;
 use crate::wrapping::word_wrap_lines;
 
-const DETAILS_MAX_LINES: usize = 3;
+pub const STATUS_DETAILS_DEFAULT_MAX_LINES: usize = 3;
 const DETAILS_PREFIX: &str = "  └ ";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusDetailsCapitalization {
+    CapitalizeFirst,
+    Preserve,
+}
 
 /// Renders a live status line (with optional details) while a task is running.
 pub struct StatusIndicatorWidget {
@@ -41,6 +48,8 @@ pub struct StatusIndicatorWidget {
     header_prefix: Option<String>,
     header_prefix_elapsed_offset: Option<Duration>,
     details: Option<String>,
+    details_max_lines: usize,
+    inline_message: Option<String>,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
     // Single-turn runners (for example `codex-potter`) may want a context indicator even when the
@@ -79,6 +88,8 @@ impl StatusIndicatorWidget {
             header_prefix: None,
             header_prefix_elapsed_offset: None,
             details: None,
+            details_max_lines: STATUS_DETAILS_DEFAULT_MAX_LINES,
+            inline_message: None,
             context_window_percent: None,
             context_window_used_tokens: None,
             show_context_window: false,
@@ -109,10 +120,28 @@ impl StatusIndicatorWidget {
     }
 
     /// Update the details text shown below the header.
-    pub fn update_details(&mut self, details: Option<String>) {
+    pub fn update_details(
+        &mut self,
+        details: Option<String>,
+        capitalization: StatusDetailsCapitalization,
+        max_lines: usize,
+    ) {
+        self.details_max_lines = max_lines.max(1);
         self.details = details
             .filter(|details| !details.is_empty())
-            .map(|details| capitalize_first(details.trim_start()));
+            .map(|details| {
+                let trimmed = details.trim_start();
+                match capitalization {
+                    StatusDetailsCapitalization::CapitalizeFirst => capitalize_first(trimmed),
+                    StatusDetailsCapitalization::Preserve => trimmed.to_string(),
+                }
+            });
+    }
+
+    pub fn update_inline_message(&mut self, message: Option<String>) {
+        self.inline_message = message
+            .map(|message| message.trim().to_string())
+            .filter(|message| !message.is_empty());
     }
 
     #[cfg(test)]
@@ -123,6 +152,11 @@ impl StatusIndicatorWidget {
     #[cfg(test)]
     pub fn details(&self) -> Option<&str> {
         self.details.as_deref()
+    }
+
+    #[cfg(test)]
+    pub fn inline_message(&self) -> Option<&str> {
+        self.inline_message.as_deref()
     }
 
     pub fn set_context_window_percent(&mut self, percent: Option<i64>) {
@@ -191,8 +225,8 @@ impl StatusIndicatorWidget {
 
         let mut out = word_wrap_lines(details.lines().map(|line| vec![line.dim()]), opts);
 
-        if out.len() > DETAILS_MAX_LINES {
-            out.truncate(DETAILS_MAX_LINES);
+        if out.len() > self.details_max_lines {
+            out.truncate(self.details_max_lines);
             let content_width = usize::from(width).saturating_sub(prefix_width).max(1);
             let max_base_len = content_width.saturating_sub(1);
             if let Some(last) = out.last_mut()
@@ -224,7 +258,7 @@ impl Renderable for StatusIndicatorWidget {
         let elapsed_duration = self.elapsed_duration_at(now);
 
         let mut lines = Vec::new();
-        lines.push(render_status_line(
+        let status_line = render_status_line(
             &StatusLine {
                 header: self.header.clone(),
                 header_prefix: self.header_prefix.clone(),
@@ -232,12 +266,17 @@ impl Renderable for StatusIndicatorWidget {
                     .header_prefix_elapsed_offset
                     .map(|offset| offset.saturating_add(elapsed_duration)),
                 elapsed: elapsed_duration,
+                inline_message: self.inline_message.clone(),
                 context_window_percent: self.context_window_percent,
                 context_window_used_tokens: self.context_window_used_tokens,
                 show_context_window: self.show_context_window,
             },
             Some(self.last_resume_at),
             self.animations_enabled,
+        );
+        lines.push(truncate_line_with_ellipsis_if_overflow(
+            status_line,
+            usize::from(area.width),
         ));
         if area.height > 1 {
             // If there is enough space, add the details lines below the header.
@@ -318,7 +357,11 @@ mod tests {
     #[test]
     fn renders_wrapped_details_panama_two_lines() {
         let mut w = StatusIndicatorWidget::new(crate::tui::FrameRequester::test_dummy(), false);
-        w.update_details(Some("A man a plan a canal panama".to_string()));
+        w.update_details(
+            Some("A man a plan a canal panama".to_string()),
+            StatusDetailsCapitalization::CapitalizeFirst,
+            STATUS_DETAILS_DEFAULT_MAX_LINES,
+        );
 
         // Freeze time-dependent rendering (elapsed + spinner) to keep the snapshot stable.
         w.is_paused = true;
@@ -371,10 +414,14 @@ mod tests {
     #[test]
     fn details_overflow_adds_ellipsis() {
         let mut w = StatusIndicatorWidget::new(crate::tui::FrameRequester::test_dummy(), true);
-        w.update_details(Some("abcd abcd abcd abcd".to_string()));
+        w.update_details(
+            Some("abcd abcd abcd abcd".to_string()),
+            StatusDetailsCapitalization::CapitalizeFirst,
+            STATUS_DETAILS_DEFAULT_MAX_LINES,
+        );
 
         let lines = w.wrapped_details_lines(6);
-        assert_eq!(lines.len(), DETAILS_MAX_LINES);
+        assert_eq!(lines.len(), STATUS_DETAILS_DEFAULT_MAX_LINES);
         let last = lines.last().expect("expected last details line");
         assert!(
             last.spans[1].content.as_ref().ends_with("…"),

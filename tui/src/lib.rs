@@ -30,6 +30,8 @@ mod human_time;
 mod insert_history;
 mod interrupted_project_prompt;
 mod key_hint;
+mod line_truncation;
+mod live_wrap;
 mod local_path;
 mod markdown;
 mod markdown_render;

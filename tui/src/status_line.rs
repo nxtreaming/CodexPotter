@@ -20,6 +20,7 @@ pub struct StatusLine {
     pub header_prefix: Option<String>,
     pub header_prefix_elapsed: Option<Duration>,
     pub elapsed: Duration,
+    pub inline_message: Option<String>,
     pub context_window_percent: Option<i64>,
     pub context_window_used_tokens: Option<i64>,
     pub show_context_window: bool,
@@ -59,6 +60,11 @@ pub fn render_status_line(
     spans.push(" ".into());
     spans.push(format!("({pretty_elapsed})").dim());
 
+    if let Some(message) = status.inline_message.as_deref() {
+        spans.push(" · ".dim());
+        spans.push(Span::from(message.to_string()).dim());
+    }
+
     if status.show_context_window {
         spans.push(" · ".dim());
         if let Some(percent) = status.context_window_percent {
@@ -96,6 +102,7 @@ mod tests {
                 header_prefix: Some("Round 1/10".to_string()),
                 header_prefix_elapsed: Some(Duration::from_secs(2650)),
                 elapsed: Duration::from_secs(2650),
+                inline_message: None,
                 context_window_percent: Some(12),
                 context_window_used_tokens: None,
                 show_context_window: true,
