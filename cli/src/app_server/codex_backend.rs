@@ -257,6 +257,14 @@ pub struct AppServerBackendConfig {
     pub event_mode: AppServerEventMode,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpServerStartupStatusUpdatedNotification {
+    name: String,
+    status: String,
+    error: Option<String>,
+}
+
 pub async fn run_app_server_backend(
     config: AppServerBackendConfig,
     mut op_rx: UnboundedReceiver<Op>,
@@ -458,16 +466,15 @@ async fn run_app_server_backend_inner(
                             });
                         }
                     }
-                    handle_op(
-                        turn_request,
-                        op,
-                        stdin.as_mut().context("codex app-server stdin unavailable")?,
-                        &mut lines,
-                        &mut next_id,
-                        &mut recovery,
+                    let mut io = AppServerIo {
+                        stdin: stdin.as_mut().context("codex app-server stdin unavailable")?,
+                        lines: &mut lines,
+                        next_id: &mut next_id,
+                        recovery: &mut recovery,
                         event_tx,
-                    )
-                    .await?;
+                        op_rx,
+                    };
+                    handle_op(turn_request, op, &mut io).await?;
                 }
                 maybe_action = recovery_action_rx.recv(), if !shutdown_requested => {
                     let Some(action) = maybe_action else {
@@ -499,6 +506,14 @@ async fn run_app_server_backend_inner(
                                 .await?;
                             }
                             recovery.last_turn_start_was_recovery_continue = true;
+                            let mut io = AppServerIo {
+                                stdin: stdin.as_mut().context("codex app-server stdin unavailable")?,
+                                lines: &mut lines,
+                                next_id: &mut next_id,
+                                recovery: &mut recovery,
+                                event_tx,
+                                op_rx,
+                            };
                             handle_op(
                                 turn_request,
                                 Op::UserInput {
@@ -508,11 +523,7 @@ async fn run_app_server_backend_inner(
                                     }],
                                     final_output_json_schema: None,
                                 },
-                                stdin.as_mut().context("codex app-server stdin unavailable")?,
-                                &mut lines,
-                                &mut next_id,
-                                &mut recovery,
-                                event_tx,
+                                &mut io,
                             )
                             .await?;
                         }
@@ -996,14 +1007,25 @@ struct TurnRequestContext<'a> {
     reasoning_effort: Option<ReasoningEffort>,
 }
 
+#[derive(Default)]
+struct PendingTurnStartInterrupt {
+    requested: bool,
+    sent: bool,
+}
+
+struct AppServerIo<'a> {
+    stdin: &'a mut ChildStdin,
+    lines: &'a mut tokio::io::Lines<BufReader<ChildStdout>>,
+    next_id: &'a mut i64,
+    recovery: &'a mut StreamRecoveryContext,
+    event_tx: &'a UnboundedSender<Event>,
+    op_rx: &'a mut UnboundedReceiver<Op>,
+}
+
 async fn handle_op(
     ctx: TurnRequestContext<'_>,
     op: Op,
-    stdin: &mut ChildStdin,
-    lines: &mut tokio::io::Lines<BufReader<ChildStdout>>,
-    next_id: &mut i64,
-    recovery: &mut StreamRecoveryContext,
-    event_tx: &UnboundedSender<Event>,
+    io: &mut AppServerIo<'_>,
 ) -> anyhow::Result<()> {
     match op {
         Op::UserInput {
@@ -1012,7 +1034,7 @@ async fn handle_op(
         } => {
             let input = items.into_iter().map(ApiUserInput::from).collect();
             let request = ClientRequest::TurnStart {
-                request_id: next_request_id(next_id),
+                request_id: next_request_id(io.next_id),
                 params: TurnStartParams {
                     thread_id: ctx.thread_id.to_string(),
                     input,
@@ -1034,33 +1056,58 @@ async fn handle_op(
                     )),
                 },
             };
-            let response = send_client_request(stdin, lines, request, recovery, event_tx).await?;
+            let request_id = request.id().clone();
+            let method = request.method();
+            send_message(io.stdin, &request).await?;
+            let mut pending_interrupt = PendingTurnStartInterrupt::default();
+            let response = match read_turn_start_response_or_error(
+                ctx,
+                &request_id,
+                io,
+                &mut pending_interrupt,
+            )
+            .await?
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    anyhow::bail!("app-server returned error for {request_id:?}: {error:?}");
+                }
+            };
+            let response_summary = summarize_response_result(&response.result);
+            let response = request.decode_response(response).with_context(|| {
+                format!("decode {method} response (payload: {response_summary})")
+            })?;
             let ClientResponse::TurnStart {
                 response: parsed, ..
             } = response
             else {
                 unreachable!("turn/start must decode into turn/start response");
             };
-            recovery.active_turn_id = Some(parsed.turn.id);
+            io.recovery.active_turn_id = Some(parsed.turn.id);
+            if pending_interrupt.requested && !pending_interrupt.sent {
+                send_turn_interrupt_for_current_state(ctx, io).await?;
+            }
             Ok(())
         }
         Op::Interrupt => {
-            let Some(turn_id) = recovery.active_turn_id.clone() else {
-                return Ok(());
-            };
-
-            let request_id = next_request_id(next_id);
+            let request_id = next_request_id(io.next_id);
             let request = ClientRequest::TurnInterrupt {
                 request_id: request_id.clone(),
                 params: crate::app_server::upstream_protocol::TurnInterruptParams {
                     thread_id: ctx.thread_id.to_string(),
-                    turn_id,
+                    turn_id: io.recovery.active_turn_id.clone().unwrap_or_default(),
                 },
             };
-            send_message(stdin, &request).await?;
+            send_message(io.stdin, &request).await?;
 
-            match read_until_response_or_error(stdin, lines, &request_id, recovery, event_tx)
-                .await?
+            match read_until_response_or_error(
+                io.stdin,
+                io.lines,
+                &request_id,
+                io.recovery,
+                io.event_tx,
+            )
+            .await?
             {
                 Ok(response) => {
                     let response = request
@@ -1086,6 +1133,85 @@ async fn handle_op(
             Ok(())
         }
     }
+}
+
+async fn read_turn_start_response_or_error(
+    ctx: TurnRequestContext<'_>,
+    request_id: &RequestId,
+    io: &mut AppServerIo<'_>,
+    pending_interrupt: &mut PendingTurnStartInterrupt,
+) -> anyhow::Result<Result<JSONRPCResponse, JSONRPCErrorError>> {
+    let mut op_rx_closed = false;
+
+    loop {
+        tokio::select! {
+            maybe_op = io.op_rx.recv(), if !op_rx_closed => {
+                match maybe_op {
+                    Some(Op::Interrupt) => {
+                        pending_interrupt.requested = true;
+                    }
+                    Some(Op::UserInput { .. }) | Some(Op::GetHistoryEntryRequest { .. }) => {}
+                    None => {
+                        op_rx_closed = true;
+                    }
+                }
+            }
+            maybe_line = io.lines.next_line() => {
+                let Some(line) = maybe_line? else {
+                    anyhow::bail!(
+                        "app-server stdout closed while waiting for response {request_id:?}"
+                    );
+                };
+                let msg: JSONRPCMessage = serde_json::from_str(&line)
+                    .with_context(|| format!("decode json-rpc: {line}"))?;
+
+                match msg {
+                    JSONRPCMessage::Response(response) if &response.id == request_id => {
+                        return Ok(Ok(response));
+                    }
+                    JSONRPCMessage::Error(err) if &err.id == request_id => {
+                        return Ok(Err(err.error));
+                    }
+                    JSONRPCMessage::Notification(notification) => {
+                        if notification.method.starts_with("codex/event/") {
+                            handle_codex_event_notification(
+                                &notification.method,
+                                notification.params,
+                                io.recovery,
+                                io.event_tx,
+                            )?;
+                        } else {
+                            handle_typed_notification(notification, io.recovery, io.event_tx)?;
+                        }
+                    }
+                    JSONRPCMessage::Request(request) => {
+                        handle_server_request(io.stdin, request, io.recovery, io.event_tx).await?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if pending_interrupt.requested && !pending_interrupt.sent {
+            send_turn_interrupt_for_current_state(ctx, io).await?;
+            pending_interrupt.sent = true;
+        }
+    }
+}
+
+async fn send_turn_interrupt_for_current_state(
+    ctx: TurnRequestContext<'_>,
+    io: &mut AppServerIo<'_>,
+) -> anyhow::Result<()> {
+    let request = ClientRequest::TurnInterrupt {
+        request_id: next_request_id(io.next_id),
+        params: crate::app_server::upstream_protocol::TurnInterruptParams {
+            thread_id: ctx.thread_id.to_string(),
+            turn_id: io.recovery.active_turn_id.clone().unwrap_or_default(),
+        },
+    };
+    send_message(io.stdin, &request).await?;
+    Ok(())
 }
 
 async fn handle_app_server_message(
@@ -1462,6 +1588,24 @@ fn handle_typed_notification(
             let ev: UpstreamItemCompletedNotification =
                 serde_json::from_value(params).context("decode item/completed notification")?;
             handle_typed_item_completed(ev, recovery, event_tx)?;
+        }
+        "mcpServer/startupStatus/updated" => {
+            let ev: McpServerStartupStatusUpdatedNotification = serde_json::from_value(params)
+                .context("decode mcpServer/startupStatus/updated notification")?;
+            if ev.status == "failed" {
+                handle_codex_event(
+                    Event {
+                        id: String::new(),
+                        msg: EventMsg::Warning(WarningEvent {
+                            message: ev.error.unwrap_or_else(|| {
+                                format!("MCP server `{}` failed to start", ev.name)
+                            }),
+                        }),
+                    },
+                    recovery,
+                    event_tx,
+                );
+            }
         }
         "error" => {
             let extracted_message = match &params {
@@ -3875,6 +4019,39 @@ done
     }
 
     #[test]
+    fn typed_mcp_startup_failure_emits_warning_event() {
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let mut recovery = recovery_context(AppServerEventMode::Interactive);
+
+        handle_typed_notification(
+            JSONRPCNotification {
+                method: "mcpServer/startupStatus/updated".to_string(),
+                params: Some(serde_json::json!({
+                    "name": "bad_mcp",
+                    "status": "failed",
+                    "error": "MCP client for `bad_mcp` failed to start: startup failed"
+                })),
+            },
+            &mut recovery,
+            &event_tx,
+        )
+        .expect("bridge MCP startup failure");
+
+        let event = event_rx.try_recv().expect("expected warning event");
+        let EventMsg::Warning(WarningEvent { message }) = event.msg else {
+            panic!("expected Warning event");
+        };
+        assert_eq!(
+            message,
+            "MCP client for `bad_mcp` failed to start: startup failed"
+        );
+        assert!(
+            event_rx.try_recv().is_err(),
+            "expected no extra events for MCP startup failure"
+        );
+    }
+
+    #[test]
     fn typed_permission_request_hook_notifications_emit_hook_events() {
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
         let mut recovery = recovery_context(AppServerEventMode::Interactive);
@@ -5434,6 +5611,315 @@ done
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn backend_turn_interrupt_during_turn_start_without_turn_id_requests_startup_interrupt() {
+        let _guard = lock_dummy_codex_test().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+        let marker = temp.path().join("saw-startup-interrupt");
+
+        let script = format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+
+MARKER="{marker}"
+
+if [[ "${{1:-}}" != "app-server" ]]; then
+  echo "expected app-server, got: $*" >&2
+  exit 1
+fi
+
+# initialize request
+IFS= read -r _line
+echo '{{"id":1,"result":{{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}}}'
+
+# initialized notification
+IFS= read -r _line
+
+# thread/start request
+IFS= read -r _line
+echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
+
+# turn/start request: withhold both turn/started and the response until the client interrupts.
+IFS= read -r _line
+
+# startup turn/interrupt request
+IFS= read -r interrupt
+echo "$interrupt" | grep -q '"method":"turn/interrupt"' || {{
+  echo "expected turn/interrupt, got: $interrupt" >&2
+  exit 1
+}}
+echo "$interrupt" | grep -q '"threadId":"00000000-0000-0000-0000-000000000000"' || {{
+  echo "expected threadId in turn/interrupt, got: $interrupt" >&2
+  exit 1
+}}
+echo "$interrupt" | grep -q '"turnId":""' || {{
+  echo "expected empty turnId in startup interrupt, got: $interrupt" >&2
+  exit 1
+}}
+touch "$MARKER"
+echo '{{"id":4,"result":{{}}}}'
+
+# Let the original turn/start request finish after the startup interrupt.
+echo '{{"id":3,"result":{{"turn":{{"id":"turn-1"}}}}}}'
+echo '{{"method":"turn/started","params":{{"threadId":"00000000-0000-0000-0000-000000000000","turn":{{"id":"turn-1","items":[],"status":"inProgress","error":null}}}}}}'
+echo '{{"method":"turn/completed","params":{{"threadId":"00000000-0000-0000-0000-000000000000","turn":{{"id":"turn-1","items":[],"status":"interrupted","error":null}}}}}}'
+
+# Wait for the client to close stdin to request shutdown.
+while IFS= read -r _line; do
+  :
+done
+"#,
+            marker = marker.display(),
+        );
+
+        write_dummy_codex_script(&codex_bin, script);
+
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+
+        let (op_tx, mut op_rx) = unbounded_channel::<Op>();
+        let backend = tokio::spawn(async move {
+            run_app_server_backend_inner(
+                AppServerBackendConfig {
+                    codex_bin: codex_bin.display().to_string(),
+                    developer_instructions: None,
+                    launch: AppServerLaunchConfig {
+                        spawn_sandbox: None,
+                        thread_sandbox: None,
+                        bypass_approvals_and_sandbox: false,
+                    },
+                    upstream_cli_args: Default::default(),
+                    codex_home: None,
+                    thread_cwd: None,
+                    resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
+                },
+                &mut op_rx,
+                &event_tx,
+            )
+            .await
+        });
+
+        op_tx
+            .send(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+            })
+            .expect("send user input");
+
+        op_tx.send(Op::Interrupt).expect("send interrupt");
+
+        timeout(Duration::from_secs(10), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for dummy server marker");
+
+        let saw_round_finished = timeout(Duration::from_secs(10), async {
+            while let Some(event) = event_rx.recv().await {
+                if matches!(
+                    event.msg,
+                    EventMsg::PotterRoundFinished {
+                        outcome: PotterRoundOutcome::Interrupted,
+                        ..
+                    }
+                ) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+
+        assert_eq!(
+            saw_round_finished,
+            Ok(true),
+            "did not observe PotterRoundFinished(Interrupted)"
+        );
+
+        drop(op_tx);
+
+        timeout(Duration::from_secs(10), backend)
+            .await
+            .expect("backend timed out")
+            .expect("backend panicked")
+            .expect("backend failed");
+
+        assert!(
+            marker.exists(),
+            "dummy server did not observe startup turn/interrupt before turn/start response"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn backend_turn_interrupt_during_turn_start_requests_turn_interrupt() {
+        let _guard = lock_dummy_codex_test().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+        let marker = temp
+            .path()
+            .join("saw-turn-interrupt-before-turn-start-response");
+
+        let script = format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+
+MARKER="{marker}"
+
+if [[ "${{1:-}}" != "app-server" ]]; then
+  echo "expected app-server, got: $*" >&2
+  exit 1
+fi
+
+# initialize request
+IFS= read -r _line
+echo '{{"id":1,"result":{{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}}}'
+
+# initialized notification
+IFS= read -r _line
+
+# thread/start request
+IFS= read -r _line
+echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
+
+# turn/start request: announce the turn but withhold the response until the client interrupts.
+IFS= read -r _line
+echo '{{"method":"turn/started","params":{{"threadId":"00000000-0000-0000-0000-000000000000","turn":{{"id":"turn-1","items":[],"status":"inProgress","error":null}}}}}}'
+
+# turn/interrupt request
+IFS= read -r interrupt
+echo "$interrupt" | grep -q '"method":"turn/interrupt"' || {{
+  echo "expected turn/interrupt, got: $interrupt" >&2
+  exit 1
+}}
+echo "$interrupt" | grep -q '"threadId":"00000000-0000-0000-0000-000000000000"' || {{
+  echo "expected threadId in turn/interrupt, got: $interrupt" >&2
+  exit 1
+}}
+echo "$interrupt" | grep -q '"turnId":"turn-1"' || {{
+  echo "expected turnId=turn-1 in turn/interrupt, got: $interrupt" >&2
+  exit 1
+}}
+touch "$MARKER"
+echo '{{"id":4,"result":{{}}}}'
+
+# Let the original turn/start request finish after the interrupt request has been accepted.
+echo '{{"id":3,"result":{{"turn":{{"id":"turn-1"}}}}}}'
+echo '{{"method":"turn/completed","params":{{"threadId":"00000000-0000-0000-0000-000000000000","turn":{{"id":"turn-1","items":[],"status":"interrupted","error":null}}}}}}'
+
+# Wait for the client to close stdin to request shutdown.
+while IFS= read -r _line; do
+  :
+done
+"#,
+            marker = marker.display(),
+        );
+
+        write_dummy_codex_script(&codex_bin, script);
+
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+
+        let (op_tx, mut op_rx) = unbounded_channel::<Op>();
+        let backend = tokio::spawn(async move {
+            run_app_server_backend_inner(
+                AppServerBackendConfig {
+                    codex_bin: codex_bin.display().to_string(),
+                    developer_instructions: None,
+                    launch: AppServerLaunchConfig {
+                        spawn_sandbox: None,
+                        thread_sandbox: None,
+                        bypass_approvals_and_sandbox: false,
+                    },
+                    upstream_cli_args: Default::default(),
+                    codex_home: None,
+                    thread_cwd: None,
+                    resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
+                },
+                &mut op_rx,
+                &event_tx,
+            )
+            .await
+        });
+
+        op_tx
+            .send(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+            })
+            .expect("send user input");
+
+        let saw_turn_started = timeout(Duration::from_secs(10), async {
+            while let Some(event) = event_rx.recv().await {
+                if matches!(event.msg, EventMsg::TurnStarted(TurnStartedEvent { .. })) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+        assert_eq!(
+            saw_turn_started,
+            Ok(true),
+            "did not observe TurnStarted before interrupt"
+        );
+
+        op_tx.send(Op::Interrupt).expect("send interrupt");
+
+        timeout(Duration::from_secs(10), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for dummy server marker");
+
+        let saw_round_finished = timeout(Duration::from_secs(10), async {
+            while let Some(event) = event_rx.recv().await {
+                if matches!(
+                    event.msg,
+                    EventMsg::PotterRoundFinished {
+                        outcome: PotterRoundOutcome::Interrupted,
+                        ..
+                    }
+                ) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+
+        assert_eq!(
+            saw_round_finished,
+            Ok(true),
+            "did not observe PotterRoundFinished(Interrupted)"
+        );
+
+        drop(op_tx);
+
+        timeout(Duration::from_secs(10), backend)
+            .await
+            .expect("backend timed out")
+            .expect("backend panicked")
+            .expect("backend failed");
+
+        assert!(
+            marker.exists(),
+            "dummy server did not observe turn/interrupt before turn/start response"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn backend_turn_interrupt_requests_turn_interrupt() {
         let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
@@ -5465,6 +5951,7 @@ echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000"
 # turn/start request
 IFS= read -r _line
 echo '{{"id":3,"result":{{"turn":{{"id":"turn-1"}}}}}}'
+echo '{{"method":"turn/started","params":{{"threadId":"00000000-0000-0000-0000-000000000000","turn":{{"id":"turn-1","items":[],"status":"inProgress","error":null}}}}}}'
 
 # turn/interrupt request
 IFS= read -r interrupt
@@ -5530,6 +6017,21 @@ done
                 final_output_json_schema: None,
             })
             .expect("send user input");
+
+        let saw_turn_started = timeout(Duration::from_secs(10), async {
+            while let Some(event) = event_rx.recv().await {
+                if matches!(event.msg, EventMsg::TurnStarted(TurnStartedEvent { .. })) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+        assert_eq!(
+            saw_turn_started,
+            Ok(true),
+            "did not observe TurnStarted before interrupt"
+        );
 
         op_tx.send(Op::Interrupt).expect("send interrupt");
 

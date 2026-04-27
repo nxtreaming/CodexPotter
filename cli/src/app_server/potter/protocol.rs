@@ -64,10 +64,9 @@ pub enum PotterAppServerClientRequest {
 
     /// Interrupt the active project.
     ///
-    /// The server first attempts a graceful interrupt (forward `Op::Interrupt` to the active
-    /// round backend and allow `PotterRoundFinished` / `PotterProjectCompleted` markers to be
-    /// emitted). If an interrupt was already requested and the project is still running, the
-    /// server may force-abort it.
+    /// The server requests a graceful interrupt by forwarding `Op::Interrupt` to the active round
+    /// backend and allowing `PotterRoundFinished` / `PotterProjectCompleted` markers to be emitted.
+    /// Repeated interrupt requests are idempotent.
     #[serde(rename = "project/interrupt")]
     ProjectInterrupt {
         #[serde(rename = "id")]

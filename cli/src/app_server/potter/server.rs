@@ -596,12 +596,6 @@ fn interrupt_project(
         );
 
         if already_requested {
-            let running = state
-                .running
-                .take()
-                .context("take running project after id match")?;
-            running.handle.abort();
-            state.resumed = None;
             return Ok(());
         }
 
@@ -3587,7 +3581,7 @@ git_branch: "main"
     }
 
     #[tokio::test]
-    async fn interrupt_project_force_aborts_on_second_request() {
+    async fn interrupt_project_is_idempotent_after_first_request() {
         let temp = tempfile::tempdir().expect("tempdir");
 
         let config = PotterAppServerConfig {
@@ -3618,9 +3612,8 @@ git_branch: "main"
 
         let (drop_tx, drop_rx) = tokio::sync::oneshot::channel();
         let handle = tokio::spawn(async move {
-            let notify = DropNotify(Some(drop_tx));
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-            drop(notify);
+            let _notify = DropNotify(Some(drop_tx));
+            std::future::pending::<()>().await;
         });
         tokio::task::yield_now().await;
 
@@ -3665,15 +3658,33 @@ git_branch: "main"
         }
 
         assert!(
-            state.running.is_none(),
-            "expected running project to be force-aborted on second interrupt; got state.running={:?}",
+            state.running.is_some(),
+            "expected repeated interrupt to keep graceful interrupt running; got state.running={:?}",
             state.running
         );
+        assert!(
+            *state
+                .running
+                .as_ref()
+                .expect("running project")
+                .interrupt_tx
+                .borrow(),
+            "expected interrupt flag to remain set"
+        );
 
-        tokio::task::yield_now().await;
+        let mut drop_rx = drop_rx;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut drop_rx)
+                .await
+                .is_err(),
+            "second interrupt should not abort the running project"
+        );
+
+        let running = state.running.take().expect("running project");
+        running.handle.abort();
         tokio::time::timeout(std::time::Duration::from_secs(1), drop_rx)
             .await
-            .expect("expected aborted task to be dropped")
+            .expect("expected manually aborted task to be dropped")
             .expect("drop notify");
     }
 
