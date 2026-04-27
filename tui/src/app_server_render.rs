@@ -1833,13 +1833,6 @@ impl RenderAppState {
                                 let width = tui.terminal.last_known_screen_size.width.max(1);
                                 self.handle_key_event(key_event, tui.frame_requester(), width);
                                 if self.prompt_action.is_some() {
-                                    if matches!(
-                                        self.prompt_action,
-                                        Some(PromptScreenAction::CancelledByUser)
-                                    ) {
-                                        // Clear the inline viewport so the shell prompt is clean on exit.
-                                        tui.terminal.clear()?;
-                                    }
                                     break;
                                 }
                             }

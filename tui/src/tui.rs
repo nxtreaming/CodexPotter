@@ -64,8 +64,8 @@ pub fn set_modes() -> Result<()> {
 
     enable_raw_mode()?;
     // Enable keyboard enhancement flags so modifiers for keys like Enter are disambiguated.
-    // chat_composer.rs is using a keyboard event listener to enter for any modified keys
-    // to create a new line that require this.
+    // Do not request REPORT_EVENT_TYPES: release events can be emitted after a Ctrl+C-triggered
+    // exit and leak raw CSI-u bytes into the user's shell.
     // Some terminals (notably legacy Windows consoles) do not support
     // keyboard enhancement flags. Attempt to enable them, but continue
     // gracefully if unsupported.
@@ -73,7 +73,6 @@ pub fn set_modes() -> Result<()> {
         stdout(),
         PushKeyboardEnhancementFlags(
             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
                 | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
         )
     );
@@ -129,9 +128,6 @@ fn restore_common(should_disable_raw_mode: bool) -> Result<()> {
     let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     execute!(stdout(), DisableBracketedPaste)?;
     let _ = execute!(stdout(), DisableFocusChange);
-    // Best-effort: leave alt-screen even if the caller exits early while an overlay is open.
-    let _ = execute!(stdout(), DisableAlternateScroll);
-    let _ = execute!(stdout(), LeaveAlternateScreen);
     if should_disable_raw_mode {
         disable_raw_mode()?;
     }

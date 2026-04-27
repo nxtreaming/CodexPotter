@@ -1,0 +1,10 @@
+---
+source: tui/src/terminal_cleanup.rs
+expression: terminal.backend().vt100().screen().contents()
+---
+above one
+above two
+
+
+below one
+below two

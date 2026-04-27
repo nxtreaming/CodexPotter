@@ -273,7 +273,7 @@ impl CodexPotterTui {
         let show_startup_banner = !self.has_rendered_round;
         let composer_draft = self.composer_draft.take();
         let startup_warnings = std::mem::take(&mut self.startup_warnings);
-        crate::app_server_render::prompt_user_with_tui(
+        let result = crate::app_server_render::prompt_user_with_tui(
             &mut self.tui,
             crate::app_server_render::PromptScreenOptions {
                 show_startup_banner,
@@ -287,7 +287,13 @@ impl CodexPotterTui {
             &mut self.projects_overlay_state,
             projects_overlay_provider,
         )
-        .await
+        .await;
+
+        // Drop and recreate the underlying crossterm EventStream so buffered prompt-exit input
+        // cannot leak into the next screen or the shell after cancellation.
+        self.reset_event_stream_after_prompt();
+
+        result
     }
 
     /// Set the start time for the current CodexPotter project.
@@ -467,8 +473,14 @@ impl CodexPotterTui {
 
 impl Drop for CodexPotterTui {
     fn drop(&mut self) {
+        // Drop crossterm's stdin reader before restoring terminal modes so it cannot keep polling
+        // stdin while the shell resumes.
+        self.tui.pause_events_and_flush_input();
+
         // Best-effort: if an overlay exited early, ensure we return to the inline screen first.
-        if let Err(err) = self.tui.leave_alt_screen() {
+        if self.tui.is_alt_screen_active()
+            && let Err(err) = self.tui.leave_alt_screen()
+        {
             tracing::warn!("failed to leave alt screen during CodexPotterTui drop: {err}");
         }
 

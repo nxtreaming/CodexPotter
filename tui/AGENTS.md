@@ -99,6 +99,18 @@ Behavior related
 - Projects overlay status colors distinguish cancelled-before-completion projects (dim), round-budget exhaustion (red), and post-completed-round interruptions (orange).
 - Project summary `Loop more rounds:` resume command includes the current process's non-default `codex-potter` global flags (aligns with the CLI exit resume note).
 
+### Temporary Upstream Bug Fixes
+
+These are intentional short-term differences from upstream Codex TUI that fix upstream-shared bugs.
+Prefer upstreaming or removing them once upstream has equivalent behavior.
+
+- Keyboard enhancement flags intentionally omit `REPORT_EVENT_TYPES`. Upstream currently requests
+  release/repeat events, which can leak raw CSI-u key-release bytes into the shell after `Ctrl+C`
+  exits.
+- `custom_terminal::Terminal::clear()` clears only the current viewport rows. Upstream currently
+  uses `ClearType::AfterCursor`, which can erase committed inline history outside the live viewport
+  during prompt transitions or exit cleanup.
+
 Engineering related:
 
 - Unneeded logics and codes in codex TUI are intentionally removed to keep code tidy and focus (codex-potter's TUI is a _subset_ of codex's TUI):

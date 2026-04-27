@@ -417,14 +417,21 @@ where
         Ok(())
     }
 
-    /// Clear the terminal and force a full redraw on the next draw call.
+    /// Clear only the current viewport and force a full redraw on the next draw call.
     pub fn clear(&mut self) -> io::Result<()> {
         if self.viewport_area.is_empty() {
             return Ok(());
         }
+
+        for y in self.viewport_area.y..self.viewport_area.bottom() {
+            self.backend.set_cursor_position(Position {
+                x: self.viewport_area.x,
+                y,
+            })?;
+            self.backend.clear_region(ClearType::UntilNewLine)?;
+        }
         self.backend
             .set_cursor_position(self.viewport_area.as_position())?;
-        self.backend.clear_region(ClearType::AfterCursor)?;
         // Reset the back buffer to make sure the next update will redraw everything.
         self.previous_buffer_mut().reset();
         Ok(())
@@ -797,6 +804,42 @@ mod tests {
         let term = Terminal::with_options(backend).expect("terminal");
         assert_eq!(term.last_known_cursor_pos, Position { x: 0, y: 0 });
         assert_eq!(term.viewport_area, Rect::new(0, 0, 0, 0));
+    }
+
+    #[test]
+    fn clear_only_clears_viewport_vt100() {
+        let backend = VT100Backend::new(40, 6);
+        let mut terminal = Terminal::with_options(backend).expect("terminal");
+        terminal.set_viewport_area(Rect::new(0, 0, 40, 6));
+
+        terminal
+            .draw(|frame| {
+                frame
+                    .buffer_mut()
+                    .set_string(0, 0, "above one", Style::default());
+                frame
+                    .buffer_mut()
+                    .set_string(0, 1, "above two", Style::default());
+                frame
+                    .buffer_mut()
+                    .set_string(0, 2, "Working", Style::default());
+                frame.buffer_mut().set_string(0, 3, "> ", Style::default());
+                frame
+                    .buffer_mut()
+                    .set_string(0, 4, "below one", Style::default());
+                frame
+                    .buffer_mut()
+                    .set_string(0, 5, "below two", Style::default());
+            })
+            .expect("draw");
+
+        terminal.set_viewport_area(Rect::new(0, 2, 40, 2));
+        terminal.clear().expect("clear viewport");
+
+        insta::assert_snapshot!(
+            "custom_terminal_clear_only_clears_viewport_vt100",
+            terminal.backend().vt100().screen().contents()
+        );
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
