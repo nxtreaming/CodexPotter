@@ -18,6 +18,10 @@ pub enum SlashCommand {
     Theme,
     /// Open the transcript verbosity picker (`/verbosity`).
     Verbosity,
+    /// List background terminals (`/ps`).
+    Ps,
+    /// Stop all background terminals (`/stop`).
+    Stop,
     /// Exit the TUI (`/exit`).
     Exit,
 }
@@ -35,6 +39,8 @@ impl SlashCommand {
             }
             SlashCommand::Theme => "choose a syntax highlighting theme",
             SlashCommand::Verbosity => "choose how much detail to show",
+            SlashCommand::Ps => "list background terminals",
+            SlashCommand::Stop => "stop all background terminals",
             SlashCommand::Exit => "exit Codex",
         }
     }
@@ -49,6 +55,8 @@ impl SlashCommand {
             SlashCommand::PotterXModel => "potter:xmodel",
             SlashCommand::Theme => "theme",
             SlashCommand::Verbosity => "verbosity",
+            SlashCommand::Ps => "ps",
+            SlashCommand::Stop => "stop",
             SlashCommand::Exit => "exit",
         }
     }
@@ -63,6 +71,8 @@ impl SlashCommand {
             | SlashCommand::Yolo
             | SlashCommand::PotterXModel
             | SlashCommand::Verbosity
+            | SlashCommand::Ps
+            | SlashCommand::Stop
             | SlashCommand::Exit => true,
         }
     }
@@ -84,6 +94,8 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
         (SlashCommand::Yolo.command(), SlashCommand::Yolo),
         (SlashCommand::CompactKb.command(), SlashCommand::CompactKb),
         (SlashCommand::Exit.command(), SlashCommand::Exit),
+        (SlashCommand::Ps.command(), SlashCommand::Ps),
+        (SlashCommand::Stop.command(), SlashCommand::Stop),
         (
             SlashCommand::PotterXModel.command(),
             SlashCommand::PotterXModel,

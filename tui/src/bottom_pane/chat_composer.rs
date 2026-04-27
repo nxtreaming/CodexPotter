@@ -3483,7 +3483,9 @@ mod tests {
         );
 
         let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
-        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        for ch in ['p', 'o', 't'] {
+            let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
 
         assert!(matches!(composer.active_popup, ActivePopup::Command(_)));
 

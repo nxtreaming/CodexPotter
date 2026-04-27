@@ -49,4 +49,14 @@ mod tests {
             Some(SlashCommand::CompactKb)
         );
     }
+
+    #[test]
+    fn ps_command_resolves_for_dispatch() {
+        assert_eq!(find_builtin_command("ps"), Some(SlashCommand::Ps));
+    }
+
+    #[test]
+    fn stop_command_resolves_for_dispatch() {
+        assert_eq!(find_builtin_command("stop"), Some(SlashCommand::Stop));
+    }
 }

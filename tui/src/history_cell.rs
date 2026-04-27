@@ -22,6 +22,7 @@ use ratatui::style::Styled;
 use ratatui::style::Stylize;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::CODEX_POTTER_VERSION;
@@ -32,6 +33,7 @@ use crate::exec_cell::CommandOutput;
 use crate::exec_cell::OutputLinesParams;
 use crate::exec_cell::TOOL_CALL_MAX_LINES;
 use crate::exec_cell::output_lines;
+use crate::live_wrap::take_prefix_by_width;
 use crate::render::line_utils::prefix_lines;
 use crate::render::line_utils::push_owned_lines;
 use crate::render::renderable::Renderable;
@@ -645,6 +647,153 @@ pub fn new_info_event(message: String, hint: Option<String>) -> PlainHistoryCell
     PlainHistoryCell { lines }
 }
 
+#[derive(Debug, Clone)]
+/// Summary information for a background unified-exec terminal entry.
+pub struct UnifiedExecProcessDetails {
+    /// Command preview shown in the listing.
+    pub command_display: String,
+    /// Recent output chunks rendered under the command, if available.
+    pub recent_chunks: Vec<String>,
+}
+
+#[derive(Debug)]
+/// History cell that renders the `/ps` output.
+pub struct UnifiedExecProcessesOutputCell {
+    processes: Vec<UnifiedExecProcessDetails>,
+}
+
+/// Build a `/ps` output cell that lists background unified-exec terminals.
+pub fn new_unified_exec_processes_output(
+    processes: Vec<UnifiedExecProcessDetails>,
+) -> UnifiedExecProcessesOutputCell {
+    UnifiedExecProcessesOutputCell { processes }
+}
+
+impl HistoryCell for UnifiedExecProcessesOutputCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+
+        let wrap_width = width as usize;
+        let max_processes = 16usize;
+        let mut out: Vec<Line<'static>> = vec![
+            Line::from("/ps".magenta()),
+            "".into(),
+            vec!["Background terminals".bold()].into(),
+            "".into(),
+        ];
+
+        if self.processes.is_empty() {
+            out.push("  • No background terminals running.".italic().into());
+            return out;
+        }
+
+        let prefix = "  • ";
+        let prefix_width = UnicodeWidthStr::width(prefix);
+        let truncation_suffix = " [...]";
+        let truncation_suffix_width = UnicodeWidthStr::width(truncation_suffix);
+        let mut shown = 0usize;
+
+        for process in &self.processes {
+            if shown >= max_processes {
+                break;
+            }
+            let command = &process.command_display;
+            let (snippet, snippet_truncated) = {
+                let (first_line, has_more_lines) = match command.split_once('\n') {
+                    Some((first, _)) => (first, true),
+                    None => (command.as_str(), false),
+                };
+                let max_graphemes = 80;
+                let mut graphemes = first_line.grapheme_indices(true);
+                if let Some((byte_index, _)) = graphemes.nth(max_graphemes) {
+                    (first_line[..byte_index].to_string(), true)
+                } else {
+                    (first_line.to_string(), has_more_lines)
+                }
+            };
+
+            if wrap_width <= prefix_width {
+                out.push(Line::from(prefix.dim()));
+                shown += 1;
+                continue;
+            }
+
+            let budget = wrap_width.saturating_sub(prefix_width);
+            let mut needs_suffix = snippet_truncated;
+            if !needs_suffix {
+                let (_, remainder, _) = take_prefix_by_width(&snippet, budget);
+                if !remainder.is_empty() {
+                    needs_suffix = true;
+                }
+            }
+            if needs_suffix && budget > truncation_suffix_width {
+                let available = budget.saturating_sub(truncation_suffix_width);
+                let (truncated, _, _) = take_prefix_by_width(&snippet, available);
+                out.push(
+                    vec![
+                        prefix.dim(),
+                        Span::from(truncated).cyan(),
+                        truncation_suffix.dim(),
+                    ]
+                    .into(),
+                );
+            } else {
+                let (truncated, _, _) = take_prefix_by_width(&snippet, budget);
+                out.push(vec![prefix.dim(), Span::from(truncated).cyan()].into());
+            }
+
+            let chunk_prefix_first = "    ↳ ";
+            let chunk_prefix_next = "      ";
+            for (idx, chunk) in process.recent_chunks.iter().enumerate() {
+                let chunk_prefix = if idx == 0 {
+                    chunk_prefix_first
+                } else {
+                    chunk_prefix_next
+                };
+                let chunk_prefix_width = UnicodeWidthStr::width(chunk_prefix);
+                if wrap_width <= chunk_prefix_width {
+                    out.push(Line::from(chunk_prefix.dim()));
+                    continue;
+                }
+                let budget = wrap_width.saturating_sub(chunk_prefix_width);
+                let (truncated, remainder, _) = take_prefix_by_width(chunk, budget);
+                if !remainder.is_empty() && budget > truncation_suffix_width {
+                    let available = budget.saturating_sub(truncation_suffix_width);
+                    let (shorter, _, _) = take_prefix_by_width(chunk, available);
+                    out.push(
+                        vec![
+                            chunk_prefix.dim(),
+                            Span::from(shorter).dim(),
+                            truncation_suffix.dim(),
+                        ]
+                        .into(),
+                    );
+                } else {
+                    out.push(vec![chunk_prefix.dim(), Span::from(truncated).dim()].into());
+                }
+            }
+
+            shown += 1;
+        }
+
+        let remaining = self.processes.len().saturating_sub(shown);
+        if remaining > 0 {
+            let more_text = format!("... and {remaining} more running");
+            if wrap_width <= prefix_width {
+                out.push(Line::from(prefix.dim()));
+            } else {
+                let budget = wrap_width.saturating_sub(prefix_width);
+                let (truncated, _, _) = take_prefix_by_width(&more_text, budget);
+                out.push(vec![prefix.dim(), Span::from(truncated).dim()].into());
+            }
+        }
+
+        out
+    }
+}
+
 #[allow(clippy::disallowed_methods)]
 pub fn new_warning_event(message: String) -> PrefixedWrappedHistoryCell {
     PrefixedWrappedHistoryCell::new(message.yellow(), "⚠ ".yellow(), "  ")
@@ -1126,6 +1275,17 @@ mod tests {
             .sum()
     }
 
+    fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| {
+                line.iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
     #[test]
     fn with_border_clamped_limits_border_to_terminal_width() {
         let width = 20u16;
@@ -1142,5 +1302,12 @@ mod tests {
     #[test]
     fn with_border_clamped_returns_empty_when_width_too_small() {
         assert!(with_border_clamped(vec![Line::from("hello")], 3).is_empty());
+    }
+
+    #[test]
+    fn ps_output_empty_snapshot() {
+        let cell = new_unified_exec_processes_output(Vec::new());
+        let rendered = render_lines(&cell.display_lines(/*width*/ 60)).join("\n");
+        insta::assert_snapshot!(rendered);
     }
 }

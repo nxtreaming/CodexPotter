@@ -2335,6 +2335,41 @@ impl RenderAppState {
                     self.bottom_pane.composer_mut().show_selection_view(params);
                     frame_requester.schedule_frame();
                 }
+                SlashCommand::Ps => {
+                    let processes = self
+                        .unified_exec_processes
+                        .iter()
+                        .map(|process| history_cell::UnifiedExecProcessDetails {
+                            command_display: process.command_display.clone(),
+                            recent_chunks: Vec::new(),
+                        })
+                        .collect();
+                    self.processor.emit_history_cell(Box::new(
+                        history_cell::new_unified_exec_processes_output(processes),
+                    ));
+                    frame_requester.schedule_frame();
+                }
+                SlashCommand::Stop => {
+                    if self.codex_op_tx.is_none() {
+                        self.processor
+                            .emit_history_cell(Box::new(history_cell::new_error_event(
+                                "'/stop' is unavailable in this mode.".to_string(),
+                            )));
+                        frame_requester.schedule_frame();
+                        return;
+                    }
+
+                    self.app_event_tx
+                        .send(AppEvent::CodexOp(Op::CleanBackgroundTerminals));
+                    self.unified_exec_processes.clear();
+                    self.sync_unified_exec_footer();
+                    self.processor
+                        .emit_history_cell(Box::new(history_cell::new_info_event(
+                            "Stopping all background terminals.".to_string(),
+                            /*hint*/ None,
+                        )));
+                    frame_requester.schedule_frame();
+                }
             },
             InputResult::None => {}
         }

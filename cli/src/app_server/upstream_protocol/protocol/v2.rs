@@ -943,6 +943,18 @@ pub struct TurnInterruptParams {
 #[serde(rename_all = "camelCase")]
 pub struct TurnInterruptResponse {}
 
+/// Parameters for the `thread/backgroundTerminals/clean` JSON-RPC method.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadBackgroundTerminalsCleanParams {
+    pub thread_id: String,
+}
+
+/// Response payload for `thread/backgroundTerminals/clean`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadBackgroundTerminalsCleanResponse {}
+
 /// Byte range into the prompt string, used to map UI placeholders.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

@@ -34,6 +34,9 @@ pub enum Op {
     /// This server sends [`EventMsg::TurnAborted`] in response.
     Interrupt,
 
+    /// Stop all background unified-exec terminals for the active thread.
+    CleanBackgroundTerminals,
+
     /// Input from the user
     UserInput {
         /// User input items, see `InputItem`

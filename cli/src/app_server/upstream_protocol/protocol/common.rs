@@ -74,6 +74,13 @@ pub enum ClientRequest {
         params: v2::ThreadRollbackParams,
     },
 
+    #[serde(rename = "thread/backgroundTerminals/clean")]
+    ThreadBackgroundTerminalsClean {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        params: v2::ThreadBackgroundTerminalsCleanParams,
+    },
+
     #[serde(rename = "turn/start")]
     TurnStart {
         #[serde(rename = "id")]
@@ -148,6 +155,13 @@ pub enum ClientResponse {
         response: v2::ThreadRollbackResponse,
     },
 
+    #[serde(rename = "thread/backgroundTerminals/clean")]
+    ThreadBackgroundTerminalsClean {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        response: v2::ThreadBackgroundTerminalsCleanResponse,
+    },
+
     #[serde(rename = "turn/start")]
     TurnStart {
         #[serde(rename = "id")]
@@ -174,6 +188,7 @@ impl ClientRequest {
             | Self::ThreadStart { request_id, .. }
             | Self::ThreadResume { request_id, .. }
             | Self::ThreadRollback { request_id, .. }
+            | Self::ThreadBackgroundTerminalsClean { request_id, .. }
             | Self::TurnStart { request_id, .. }
             | Self::TurnInterrupt { request_id, .. } => request_id,
         }
@@ -189,6 +204,7 @@ impl ClientRequest {
             Self::ThreadStart { .. } => "thread/start",
             Self::ThreadResume { .. } => "thread/resume",
             Self::ThreadRollback { .. } => "thread/rollback",
+            Self::ThreadBackgroundTerminalsClean { .. } => "thread/backgroundTerminals/clean",
             Self::TurnStart { .. } => "turn/start",
             Self::TurnInterrupt { .. } => "turn/interrupt",
         }
@@ -232,6 +248,12 @@ impl ClientRequest {
                 request_id,
                 response: serde_json::from_value(response.result)?,
             },
+            Self::ThreadBackgroundTerminalsClean { .. } => {
+                ClientResponse::ThreadBackgroundTerminalsClean {
+                    request_id,
+                    response: serde_json::from_value(response.result)?,
+                }
+            }
             Self::TurnStart { .. } => ClientResponse::TurnStart {
                 request_id,
                 response: serde_json::from_value(response.result)?,

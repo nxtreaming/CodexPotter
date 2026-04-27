@@ -21,7 +21,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 ### Text Box
 
 - Supports `$` skills picker, the same as upstream.
-- Slash command picker exists but only supports `/mention`, `/list`, `/theme`, `/verbosity`, `/yolo`, `/compact-kb` (inserts a canned KB cleanup prompt), `/exit`, `/potter:xmodel` (inserts a literal marker only).
+- Slash command picker exists but only supports `/mention`, `/list`, `/theme`, `/verbosity`, `/yolo`, `/compact-kb` (inserts a canned KB cleanup prompt), `/ps`, `/stop`, `/exit`, `/potter:xmodel` (inserts a literal marker only).
 - No `?` shortcuts overlay (treat `?` as a literal character).
 - `Tab` inserts a literal tab character (`\t`) into the composer.
 - Composer placeholder text is customized.

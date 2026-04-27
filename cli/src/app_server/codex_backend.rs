@@ -1089,6 +1089,46 @@ async fn handle_op(
             }
             Ok(())
         }
+        Op::CleanBackgroundTerminals => {
+            let request_id = next_request_id(io.next_id);
+            let request = ClientRequest::ThreadBackgroundTerminalsClean {
+                request_id: request_id.clone(),
+                params:
+                    crate::app_server::upstream_protocol::ThreadBackgroundTerminalsCleanParams {
+                        thread_id: ctx.thread_id.to_string(),
+                    },
+            };
+            send_message(io.stdin, &request).await?;
+
+            match read_until_response_or_error(
+                io.stdin,
+                io.lines,
+                &request_id,
+                io.recovery,
+                io.event_tx,
+            )
+            .await?
+            {
+                Ok(response) => {
+                    let response = request
+                        .decode_response(response)
+                        .context("decode thread/backgroundTerminals/clean response")?;
+                    let ClientResponse::ThreadBackgroundTerminalsClean {
+                        response: _parsed, ..
+                    } = response
+                    else {
+                        unreachable!(
+                            "thread/backgroundTerminals/clean must decode into its response type"
+                        );
+                    };
+                    Ok(())
+                }
+                Err(error) if error.code == JSONRPC_INVALID_REQUEST_ERROR_CODE => Ok(()),
+                Err(error) => {
+                    anyhow::bail!("app-server returned error for {request_id:?}: {error:?}");
+                }
+            }
+        }
         Op::Interrupt => {
             let request_id = next_request_id(io.next_id);
             let request = ClientRequest::TurnInterrupt {
@@ -1145,13 +1185,24 @@ async fn read_turn_start_response_or_error(
 
     loop {
         tokio::select! {
-            maybe_op = io.op_rx.recv(), if !op_rx_closed => {
-                match maybe_op {
-                    Some(Op::Interrupt) => {
-                        pending_interrupt.requested = true;
-                    }
-                    Some(Op::UserInput { .. }) | Some(Op::GetHistoryEntryRequest { .. }) => {}
-                    None => {
+                maybe_op = io.op_rx.recv(), if !op_rx_closed => {
+                    match maybe_op {
+                        Some(Op::CleanBackgroundTerminals) => {
+                            let request_id = next_request_id(io.next_id);
+                            let request = ClientRequest::ThreadBackgroundTerminalsClean {
+                                request_id,
+                                params:
+                                    crate::app_server::upstream_protocol::ThreadBackgroundTerminalsCleanParams {
+                                        thread_id: ctx.thread_id.to_string(),
+                                    },
+                            };
+                            send_message(io.stdin, &request).await?;
+                        }
+                        Some(Op::Interrupt) => {
+                            pending_interrupt.requested = true;
+                        }
+                        Some(Op::UserInput { .. }) | Some(Op::GetHistoryEntryRequest { .. }) => {}
+                        None => {
                         op_rx_closed = true;
                     }
                 }
