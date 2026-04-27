@@ -159,13 +159,13 @@ fn project_list_status(
         return PotterProjectListStatus::Succeeded;
     }
 
-    let has_completed_round = index
+    let has_successful_round = index
         .completed_rounds
         .iter()
         .any(|round| matches!(round.outcome, PotterRoundOutcome::Completed));
 
     if let Some(unfinished_round) = index.unfinished_round.as_ref() {
-        if !has_completed_round
+        if index.completed_rounds.is_empty()
             && rollout_has_interrupted_turn(workdir, &unfinished_round.rollout_path)
         {
             return PotterProjectListStatus::Cancelled;
@@ -186,7 +186,7 @@ fn project_list_status(
             }
         }
         PotterRoundOutcome::Interrupted | PotterRoundOutcome::UserRequested => {
-            if has_completed_round {
+            if has_successful_round {
                 PotterProjectListStatus::Interrupted
             } else {
                 PotterProjectListStatus::Cancelled
@@ -206,7 +206,7 @@ fn best_effort_project_list_status(lines: &[PotterRolloutLine]) -> PotterProject
         return PotterProjectListStatus::Succeeded;
     }
 
-    let has_completed_round = lines.iter().any(|line| {
+    let has_successful_round = lines.iter().any(|line| {
         matches!(
             line,
             PotterRolloutLine::RoundFinished {
@@ -215,7 +215,7 @@ fn best_effort_project_list_status(lines: &[PotterRolloutLine]) -> PotterProject
             }
         )
     });
-    if !has_completed_round
+    if !has_successful_round
         && lines.iter().any(|line| {
             matches!(
                 line,
