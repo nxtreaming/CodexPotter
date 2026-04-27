@@ -247,6 +247,9 @@ pub enum EventMsg {
     /// Notification that the server is about to execute a command.
     ExecCommandBegin(ExecCommandBeginEvent),
 
+    /// Streaming stdout/stderr chunk for an in-progress command.
+    ExecCommandOutputDelta(ExecCommandOutputDeltaEvent),
+
     /// Terminal interaction for an in-progress command (stdin sent and stdout observed).
     TerminalInteraction(TerminalInteractionEvent),
 
@@ -840,6 +843,23 @@ pub struct ExecCommandEndEvent {
     pub duration: Duration,
     /// Formatted output from the command, as seen by the model.
     pub formatted_output: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecOutputStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ExecCommandOutputDeltaEvent {
+    /// Identifier for the ExecCommandBegin that produced this chunk.
+    pub call_id: String,
+    /// Which stream produced this chunk.
+    pub stream: ExecOutputStream,
+    /// Raw bytes from the stream (may not be valid UTF-8).
+    pub chunk: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1514,6 +1534,34 @@ mod tests {
                 assert_eq!(stdin, "");
             }
             other => panic!("expected terminal interaction event, got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn exec_command_output_delta_event_deserializes() -> Result<()> {
+        let event: Event = serde_json::from_value(json!({
+            "id": "1234",
+            "msg": {
+                "type": "exec_command_output_delta",
+                "call_id": "call-1",
+                "stream": "stdout",
+                "chunk": [104, 101, 108, 108, 111]
+            }
+        }))?;
+
+        match event.msg {
+            EventMsg::ExecCommandOutputDelta(ExecCommandOutputDeltaEvent {
+                call_id,
+                stream,
+                chunk,
+            }) => {
+                assert_eq!(call_id, "call-1");
+                assert_eq!(stream, ExecOutputStream::Stdout);
+                assert_eq!(chunk, b"hello".to_vec());
+            }
+            other => panic!("expected exec command output delta event, got {other:?}"),
         }
 
         Ok(())

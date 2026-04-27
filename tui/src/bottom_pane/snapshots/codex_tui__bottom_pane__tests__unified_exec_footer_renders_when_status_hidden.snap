@@ -1,0 +1,25 @@
+---
+source: tui/src/bottom_pane/mod.rs
+expression: "render_snapshot(&pane, area)"
+---
+Buffer {
+    area: Rect { x: 0, y: 0, width: 80, height: 6 },
+    content: [
+        "  1 background terminal running · /ps to view · /stop to close                  ",
+        "                                                                                ",
+        "                                                                                ",
+        "› Assign new task to CodexPotter                                                ",
+        "                                                                                ",
+        "  ctrl+g editor · .                                                             ",
+    ],
+    styles: [
+        x: 0, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
+        x: 62, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 0, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: BOLD,
+        x: 1, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 2, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
+        x: 32, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 8, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
+        x: 19, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+    ]
+}

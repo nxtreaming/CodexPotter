@@ -1560,7 +1560,9 @@ struct RenderAppState {
 #[derive(Debug, Clone)]
 struct UnifiedExecProcessSummary {
     key: String,
+    call_id: String,
     command_display: String,
+    recent_chunks: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2341,7 +2343,7 @@ impl RenderAppState {
                         .iter()
                         .map(|process| history_cell::UnifiedExecProcessDetails {
                             command_display: process.command_display.clone(),
-                            recent_chunks: Vec::new(),
+                            recent_chunks: process.recent_chunks.clone(),
                         })
                         .collect();
                     self.processor.emit_history_cell(Box::new(
@@ -2710,6 +2712,9 @@ impl RenderAppState {
 
         match &event.msg {
             EventMsg::ExecCommandBegin(ev) => self.record_exec_command(ev),
+            EventMsg::ExecCommandOutputDelta(ev) => {
+                self.track_unified_exec_output_chunk(&ev.call_id, &ev.chunk);
+            }
             EventMsg::TerminalInteraction(ev) => {
                 self.show_unified_exec_wait(ev);
                 return Ok(());
@@ -2723,7 +2728,7 @@ impl RenderAppState {
             EventMsg::TurnComplete(_)
             | EventMsg::TurnAborted(_)
             | EventMsg::PotterRoundFinished { .. } => {
-                self.clear_unified_exec_state();
+                self.restore_status_after_unified_exec_wait();
             }
             _ => {}
         }
@@ -2861,11 +2866,15 @@ impl RenderAppState {
             .iter_mut()
             .find(|process| process.key == key)
         {
+            existing.call_id = ev.call_id.clone();
             existing.command_display = command_display.clone();
+            existing.recent_chunks.clear();
         } else {
             self.unified_exec_processes.push(UnifiedExecProcessSummary {
                 key: key.clone(),
+                call_id: ev.call_id.clone(),
                 command_display: command_display.clone(),
+                recent_chunks: Vec::new(),
             });
         }
         self.sync_unified_exec_footer();
@@ -2927,12 +2936,6 @@ impl RenderAppState {
         self.bottom_pane.update_status_header(header);
     }
 
-    fn clear_unified_exec_state(&mut self) {
-        self.restore_status_after_unified_exec_wait();
-        self.unified_exec_processes.clear();
-        self.sync_unified_exec_footer();
-    }
-
     fn handle_exec_command_end_status(
         &mut self,
         ev: &codex_protocol::protocol::ExecCommandEndEvent,
@@ -2954,6 +2957,31 @@ impl RenderAppState {
             .retain(|process| process.key != key);
         if before != self.unified_exec_processes.len() {
             self.sync_unified_exec_footer();
+        }
+    }
+
+    fn track_unified_exec_output_chunk(&mut self, call_id: &str, chunk: &[u8]) {
+        let Some(process) = self
+            .unified_exec_processes
+            .iter_mut()
+            .find(|process| process.call_id == call_id)
+        else {
+            return;
+        };
+
+        let text = String::from_utf8_lossy(chunk);
+        for line in text
+            .lines()
+            .map(str::trim_end)
+            .filter(|line| !line.is_empty())
+        {
+            process.recent_chunks.push(line.to_string());
+        }
+
+        const MAX_RECENT_CHUNKS: usize = 3;
+        if process.recent_chunks.len() > MAX_RECENT_CHUNKS {
+            let drop_count = process.recent_chunks.len() - MAX_RECENT_CHUNKS;
+            process.recent_chunks.drain(0..drop_count);
         }
     }
 
@@ -3036,7 +3064,9 @@ mod tests {
     use codex_protocol::protocol::ErrorEvent;
     use codex_protocol::protocol::ExecCommandBeginEvent;
     use codex_protocol::protocol::ExecCommandEndEvent;
+    use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
     use codex_protocol::protocol::ExecCommandSource;
+    use codex_protocol::protocol::ExecOutputStream;
     use codex_protocol::protocol::HookCompletedEvent;
     use codex_protocol::protocol::HookEventName;
     use codex_protocol::protocol::HookExecutionMode;
@@ -3774,6 +3804,114 @@ mod tests {
         pretty_assertions::assert_eq!(status.header(), "Inspecting for background shell");
         pretty_assertions::assert_eq!(status.details(), None);
         pretty_assertions::assert_eq!(status.inline_message(), None);
+
+        let _cells = drain_history_cell_strings(&mut rx_app, width);
+    }
+
+    #[test]
+    fn background_terminal_survives_turn_complete_and_ps_shows_recent_chunks() {
+        let width: u16 = 80;
+
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        bottom_pane.set_task_running(true);
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        app.handle_codex_event(
+            crate::tui::FrameRequester::test_dummy(),
+            Event {
+                id: "exec-begin".into(),
+                msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+                    call_id: "call-1".to_string(),
+                    process_id: Some("proc-1".to_string()),
+                    turn_id: "turn-1".to_string(),
+                    command: vec!["bash".to_string(), "-lc".to_string(), "sleep 5".to_string()],
+                    cwd: PathBuf::from("project"),
+                    parsed_cmd: Vec::new(),
+                    source: ExecCommandSource::UnifiedExecStartup,
+                    interaction_input: None,
+                }),
+            },
+        )
+        .expect("handle exec begin");
+        app.handle_codex_event(
+            crate::tui::FrameRequester::test_dummy(),
+            Event {
+                id: "output-1".into(),
+                msg: EventMsg::ExecCommandOutputDelta(ExecCommandOutputDeltaEvent {
+                    call_id: "call-1".to_string(),
+                    stream: ExecOutputStream::Stdout,
+                    chunk: b"first\nsecond\n".to_vec(),
+                }),
+            },
+        )
+        .expect("handle first output delta");
+        app.handle_codex_event(
+            crate::tui::FrameRequester::test_dummy(),
+            Event {
+                id: "output-2".into(),
+                msg: EventMsg::ExecCommandOutputDelta(ExecCommandOutputDeltaEvent {
+                    call_id: "call-1".to_string(),
+                    stream: ExecOutputStream::Stdout,
+                    chunk: b"third\nfourth\n".to_vec(),
+                }),
+            },
+        )
+        .expect("handle second output delta");
+        app.handle_codex_event(
+            crate::tui::FrameRequester::test_dummy(),
+            Event {
+                id: "turn-complete".into(),
+                msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: "turn-1".to_string(),
+                    last_agent_message: None,
+                }),
+            },
+        )
+        .expect("handle turn complete");
+
+        pretty_assertions::assert_eq!(app.unified_exec_processes.len(), 1);
+        let process = &app.unified_exec_processes[0];
+        pretty_assertions::assert_eq!(
+            process.recent_chunks,
+            vec![
+                "second".to_string(),
+                "third".to_string(),
+                "fourth".to_string()
+            ]
+        );
+
+        let cell = history_cell::new_unified_exec_processes_output(vec![
+            history_cell::UnifiedExecProcessDetails {
+                command_display: process.command_display.clone(),
+                recent_chunks: process.recent_chunks.clone(),
+            },
+        ]);
+        let rendered = lines_to_plain_text(&cell.display_lines(width));
+        assert!(rendered.contains("sleep 5"), "rendered={rendered:?}");
+        assert!(rendered.contains("second"), "rendered={rendered:?}");
+        assert!(rendered.contains("fourth"), "rendered={rendered:?}");
+        assert!(!rendered.contains("first"), "rendered={rendered:?}");
 
         let _cells = drain_history_cell_strings(&mut rx_app, width);
     }

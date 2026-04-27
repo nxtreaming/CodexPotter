@@ -40,6 +40,7 @@ use crate::app_server::upstream_protocol::CollaborationModeKind;
 use crate::app_server::upstream_protocol::CollaborationModeSettings;
 use crate::app_server::upstream_protocol::CommandAction as UpstreamCommandAction;
 use crate::app_server::upstream_protocol::CommandExecutionApprovalDecision;
+use crate::app_server::upstream_protocol::CommandExecutionOutputDeltaNotification as UpstreamCommandExecutionOutputDeltaNotification;
 use crate::app_server::upstream_protocol::CommandExecutionRequestApprovalResponse;
 use crate::app_server::upstream_protocol::CommandExecutionThreadItem as UpstreamCommandExecutionThreadItem;
 use crate::app_server::upstream_protocol::ContextCompactedNotification as UpstreamContextCompactedNotification;
@@ -133,7 +134,9 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandBeginEvent;
 use codex_protocol::protocol::ExecCommandEndEvent;
+use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
 use codex_protocol::protocol::ExecCommandSource;
+use codex_protocol::protocol::ExecOutputStream;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::HookCompletedEvent;
 use codex_protocol::protocol::HookEventName;
@@ -1528,6 +1531,23 @@ fn handle_typed_notification(
                 Event {
                     id: ev.turn_id,
                     msg: EventMsg::PlanDelta(PlanDeltaEvent { delta: ev.delta }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
+        "item/commandExecution/outputDelta" => {
+            let ev: UpstreamCommandExecutionOutputDeltaNotification =
+                serde_json::from_value(params)
+                    .context("decode item/commandExecution/outputDelta notification")?;
+            handle_codex_event(
+                Event {
+                    id: ev.turn_id,
+                    msg: EventMsg::ExecCommandOutputDelta(ExecCommandOutputDeltaEvent {
+                        call_id: ev.item_id,
+                        stream: ExecOutputStream::Stdout,
+                        chunk: ev.delta.into_bytes(),
+                    }),
                 },
                 recovery,
                 event_tx,
@@ -4349,6 +4369,45 @@ done
         assert!(
             event_rx.try_recv().is_err(),
             "expected no extra events for plan update notification"
+        );
+    }
+
+    #[test]
+    fn typed_command_execution_output_delta_notification_emits_output_delta_event() {
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let mut recovery = recovery_context(AppServerEventMode::Interactive);
+
+        handle_typed_notification(
+            JSONRPCNotification {
+                method: "item/commandExecution/outputDelta".to_string(),
+                params: Some(serde_json::json!({
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "itemId": "call-1",
+                    "delta": "hello\n"
+                })),
+            },
+            &mut recovery,
+            &event_tx,
+        )
+        .expect("bridge command execution output delta");
+
+        let event = event_rx.try_recv().expect("expected bridged output delta");
+        assert_eq!(event.id, "turn-1");
+        let EventMsg::ExecCommandOutputDelta(delta) = event.msg else {
+            panic!("expected ExecCommandOutputDelta event");
+        };
+        assert_eq!(
+            delta,
+            ExecCommandOutputDeltaEvent {
+                call_id: "call-1".to_string(),
+                stream: ExecOutputStream::Stdout,
+                chunk: b"hello\n".to_vec(),
+            }
+        );
+        assert!(
+            event_rx.try_recv().is_err(),
+            "expected no extra events for output delta notification"
         );
     }
 

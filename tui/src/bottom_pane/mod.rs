@@ -393,13 +393,20 @@ impl Renderable for BottomPane {
 
         let top_area = Rect::new(area.x, area.y, area.width, height_above_composer);
 
-        let status_height = self
+        let footer_height = if self.status.is_none() && !self.unified_exec_footer.is_empty() {
+            self.unified_exec_footer
+                .desired_height(width)
+                .saturating_add(1)
+        } else {
+            0
+        };
+        let top_status_height = self
             .status
             .as_ref()
             .map(|status| status.desired_height(width).saturating_add(2))
-            .unwrap_or(0)
+            .unwrap_or(footer_height)
             .min(top_area.height);
-        let status_area = Rect::new(top_area.x, top_area.y, top_area.width, status_height);
+        let status_area = Rect::new(top_area.x, top_area.y, top_area.width, top_status_height);
         if let Some(status) = self.status.as_ref() {
             // Leave one blank line above and below the status indicator so it matches the legacy
             // Codex TUI spacing (shimmer should not touch the transcript directly).
@@ -415,15 +422,26 @@ impl Renderable for BottomPane {
                     );
                 }
             }
+        } else if !self.unified_exec_footer.is_empty() {
+            let height = self
+                .unified_exec_footer
+                .desired_height(status_area.width)
+                .min(status_area.height);
+            if height > 0 {
+                self.unified_exec_footer.render(
+                    Rect::new(status_area.x, status_area.y, status_area.width, height),
+                    buf,
+                );
+            }
         }
 
-        let queue_height = top_area.height.saturating_sub(status_height);
+        let queue_height = top_area.height.saturating_sub(top_status_height);
         if queue_height == 0 {
             return;
         }
         let queue_area = Rect::new(
             top_area.x,
-            top_area.y + status_height,
+            top_area.y + top_status_height,
             top_area.width,
             queue_height,
         );
@@ -431,10 +449,21 @@ impl Renderable for BottomPane {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        self.status
+        let status_height = self
+            .status
             .as_ref()
             .map(|status| status.desired_height(width).saturating_add(2))
-            .unwrap_or(0)
+            .unwrap_or_else(|| {
+                if self.unified_exec_footer.is_empty() {
+                    0
+                } else {
+                    self.unified_exec_footer
+                        .desired_height(width)
+                        .saturating_add(1)
+                }
+            });
+
+        status_height
             + self.queued_user_messages.desired_height(width)
             + self.composer.desired_height(width)
             + if self.composer.selection_popup_visible() {
@@ -465,5 +494,44 @@ impl Renderable for BottomPane {
             composer_height,
         );
         self.composer.cursor_pos(composer_area)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_event::AppEvent;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    fn new_test_pane() -> BottomPane {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        BottomPane::new(BottomPaneParams {
+            frame_requester: FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: AppEventSender::new(tx_raw),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        })
+    }
+
+    fn render_snapshot(pane: &BottomPane, area: Rect) -> String {
+        let mut buf = Buffer::empty(area);
+        pane.render(area, &mut buf);
+        format!("{buf:?}")
+    }
+
+    #[test]
+    fn unified_exec_footer_renders_when_status_hidden() {
+        let mut pane = new_test_pane();
+        pane.set_unified_exec_processes(vec!["sleep 5".to_string()]);
+
+        let width = 80;
+        let height = pane.desired_height(width);
+        let area = Rect::new(0, 0, width, height);
+        insta::assert_snapshot!(
+            "unified_exec_footer_renders_when_status_hidden",
+            render_snapshot(&pane, area)
+        );
     }
 }

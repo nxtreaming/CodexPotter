@@ -1310,4 +1310,18 @@ mod tests {
         let rendered = render_lines(&cell.display_lines(/*width*/ 60)).join("\n");
         insta::assert_snapshot!(rendered);
     }
+
+    #[test]
+    fn ps_output_with_recent_chunks_snapshot() {
+        let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+            command_display: "sleep 5".to_string(),
+            recent_chunks: vec![
+                "started".to_string(),
+                "still running".to_string(),
+                "waiting for input".to_string(),
+            ],
+        }]);
+        let rendered = render_lines(&cell.display_lines(/*width*/ 60)).join("\n");
+        insta::assert_snapshot!(rendered);
+    }
 }

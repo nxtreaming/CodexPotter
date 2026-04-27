@@ -1,0 +1,12 @@
+---
+source: tui/src/history_cell.rs
+expression: rendered
+---
+/ps
+
+Background terminals
+
+  • sleep 5
+    ↳ started
+      still running
+      waiting for input
