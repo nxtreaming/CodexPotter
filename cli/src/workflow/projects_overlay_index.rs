@@ -10,9 +10,11 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use chrono::DateTime;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::PotterProjectListEntry;
 use codex_protocol::protocol::PotterProjectListStatus;
 use codex_protocol::protocol::PotterRoundOutcome;
+use codex_protocol::protocol::TurnAbortReason;
 
 use crate::workflow::rollout::PotterRolloutLine;
 use crate::workflow::rollout_resume_index::PotterRolloutResumeIndex;
@@ -119,7 +121,7 @@ fn project_entry_for_progress_file(
         });
     };
 
-    let status = project_list_status(&index);
+    let status = project_list_status(workdir, &index);
     let description = read_project_description(
         progress_file_abs,
         index.project_started.user_message.as_deref(),
@@ -145,7 +147,10 @@ fn relativize_path(workdir: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(workdir).unwrap_or(path).to_path_buf()
 }
 
-fn project_list_status(index: &PotterRolloutResumeIndex) -> PotterProjectListStatus {
+fn project_list_status(
+    workdir: &Path,
+    index: &PotterRolloutResumeIndex,
+) -> PotterProjectListStatus {
     if index
         .completed_rounds
         .iter()
@@ -159,7 +164,12 @@ fn project_list_status(index: &PotterRolloutResumeIndex) -> PotterProjectListSta
         .iter()
         .any(|round| matches!(round.outcome, PotterRoundOutcome::Completed));
 
-    if index.unfinished_round.is_some() {
+    if let Some(unfinished_round) = index.unfinished_round.as_ref() {
+        if !has_completed_round
+            && rollout_has_interrupted_turn(workdir, &unfinished_round.rollout_path)
+        {
+            return PotterProjectListStatus::Cancelled;
+        }
         return PotterProjectListStatus::Incomplete;
     }
 
@@ -220,6 +230,46 @@ fn best_effort_project_list_status(lines: &[PotterRolloutLine]) -> PotterProject
     }
 
     PotterProjectListStatus::Incomplete
+}
+
+fn rollout_has_interrupted_turn(workdir: &Path, rollout_path: &Path) -> bool {
+    let rollout_path = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+        workdir,
+        rollout_path,
+    );
+    read_rollout_has_interrupted_turn(&rollout_path).unwrap_or(false)
+}
+
+fn read_rollout_has_interrupted_turn(rollout_path: &Path) -> anyhow::Result<bool> {
+    let file = std::fs::File::open(rollout_path)
+        .with_context(|| format!("open rollout {}", rollout_path.display()))?;
+    let reader = std::io::BufReader::new(file);
+
+    for (idx, line) in reader.lines().enumerate() {
+        let line_number = idx + 1;
+        let line = line.with_context(|| format!("read rollout line {line_number}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let value: serde_json::Value = serde_json::from_str(&line)
+            .with_context(|| format!("parse rollout json line {line_number}: {line}"))?;
+        if value.get("type").and_then(serde_json::Value::as_str) != Some("event_msg") {
+            continue;
+        }
+        let Some(payload) = value.get("payload") else {
+            continue;
+        };
+        let Ok(EventMsg::TurnAborted(ev)) = serde_json::from_value::<EventMsg>(payload.clone())
+        else {
+            continue;
+        };
+        if matches!(ev.reason, TurnAbortReason::Interrupted) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn best_effort_project_user_message(lines: &[PotterRolloutLine]) -> Option<&str> {
@@ -461,6 +511,17 @@ original goal line
             path,
             format!(
                 r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"agent_message","message":"hello"}}}}
+"#
+            ),
+        )
+        .expect("write rollout");
+    }
+
+    fn write_rollout_with_interrupted_turn(path: &Path, timestamp: &str) {
+        std::fs::write(
+            path,
+            format!(
+                r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"turn_aborted","turn_id":"turn-1","reason":"interrupted"}}}}
 "#
             ),
         )
@@ -811,6 +872,60 @@ original goal line
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, PotterProjectListStatus::Incomplete);
         assert_eq!(rows[0].rounds, 1);
+    }
+
+    #[test]
+    fn discover_projects_marks_unfinished_first_round_with_interrupted_turn_as_cancelled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+
+        let main = write_main(workdir, ".codexpotter/projects/2026/03/02/6", None);
+        let rollout = workdir.join("interrupted.jsonl");
+        write_rollout_with_interrupted_turn(&rollout, "2026-03-02T00:00:00.000Z");
+
+        let potter_rollout_path = main
+            .parent()
+            .expect("project dir")
+            .join(crate::workflow::rollout::POTTER_ROLLOUT_FILENAME);
+        let user_prompt_file = main.strip_prefix(workdir).expect("rel").to_path_buf();
+        let thread_id =
+            codex_protocol::ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c000")
+                .expect("thread id");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::ProjectStarted {
+                user_message: Some("interrupted prompt".to_string()),
+                user_prompt_file,
+            },
+        )
+        .expect("append project_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 10,
+            },
+        )
+        .expect("append round_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id,
+                rollout_path: Path::new("interrupted.jsonl").to_path_buf(),
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round_configured");
+
+        let rows = discover_projects_for_overlay(workdir).expect("discover");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, PotterProjectListStatus::Cancelled);
+        assert_eq!(rows[0].rounds, 1);
+        assert_eq!(rows[0].description, "interrupted prompt");
+        assert_eq!(rows[0].started_at_unix_secs, Some(1_772_409_600));
     }
 
     #[test]
