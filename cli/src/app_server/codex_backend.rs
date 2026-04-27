@@ -6030,6 +6030,167 @@ done
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn backend_clean_background_terminals_during_turn_start_requests_clean() {
+        let _guard = lock_dummy_codex_test().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+        let marker = temp
+            .path()
+            .join("saw-clean-background-terminals-before-turn-start-response");
+
+        let script = format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+
+MARKER="{marker}"
+
+if [[ "${{1:-}}" != "app-server" ]]; then
+  echo "expected app-server, got: $*" >&2
+  exit 1
+fi
+
+# initialize request
+IFS= read -r _line
+echo '{{"id":1,"result":{{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}}}'
+
+# initialized notification
+IFS= read -r _line
+
+# thread/start request
+IFS= read -r _line
+echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
+
+# turn/start request: announce the turn but withhold the response until the client cleans terminals.
+IFS= read -r _line
+echo '{{"method":"turn/started","params":{{"threadId":"00000000-0000-0000-0000-000000000000","turn":{{"id":"turn-1","items":[],"status":"inProgress","error":null}}}}}}'
+
+# thread/backgroundTerminals/clean request
+IFS= read -r clean
+echo "$clean" | grep -q '"method":"thread/backgroundTerminals/clean"' || {{
+  echo "expected thread/backgroundTerminals/clean, got: $clean" >&2
+  exit 1
+}}
+echo "$clean" | grep -q '"threadId":"00000000-0000-0000-0000-000000000000"' || {{
+  echo "expected threadId in clean request, got: $clean" >&2
+  exit 1
+}}
+touch "$MARKER"
+echo '{{"id":4,"result":{{}}}}'
+
+# Let the original turn/start request finish after the clean request has been accepted.
+echo '{{"id":3,"result":{{"turn":{{"id":"turn-1"}}}}}}'
+echo '{{"method":"turn/completed","params":{{"threadId":"00000000-0000-0000-0000-000000000000","turn":{{"id":"turn-1","items":[],"status":"completed","error":null}}}}}}'
+
+# Wait for the client to close stdin to request shutdown.
+while IFS= read -r _line; do
+  :
+done
+"#,
+            marker = marker.display(),
+        );
+
+        write_dummy_codex_script(&codex_bin, script);
+
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+
+        let (op_tx, mut op_rx) = unbounded_channel::<Op>();
+        let backend = tokio::spawn(async move {
+            run_app_server_backend_inner(
+                AppServerBackendConfig {
+                    codex_bin: codex_bin.display().to_string(),
+                    developer_instructions: None,
+                    launch: AppServerLaunchConfig {
+                        spawn_sandbox: None,
+                        thread_sandbox: None,
+                        bypass_approvals_and_sandbox: false,
+                    },
+                    upstream_cli_args: Default::default(),
+                    codex_home: None,
+                    thread_cwd: None,
+                    resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
+                },
+                &mut op_rx,
+                &event_tx,
+            )
+            .await
+        });
+
+        op_tx
+            .send(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+            })
+            .expect("send user input");
+
+        let saw_turn_started = timeout(Duration::from_secs(10), async {
+            while let Some(event) = event_rx.recv().await {
+                if matches!(event.msg, EventMsg::TurnStarted(TurnStartedEvent { .. })) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+        assert_eq!(
+            saw_turn_started,
+            Ok(true),
+            "did not observe TurnStarted before clean request"
+        );
+
+        op_tx
+            .send(Op::CleanBackgroundTerminals)
+            .expect("send clean background terminals");
+
+        timeout(Duration::from_secs(10), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for dummy server marker");
+
+        let saw_round_finished = timeout(Duration::from_secs(10), async {
+            while let Some(event) = event_rx.recv().await {
+                if matches!(
+                    event.msg,
+                    EventMsg::PotterRoundFinished {
+                        outcome: PotterRoundOutcome::Completed,
+                        ..
+                    }
+                ) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+
+        assert_eq!(
+            saw_round_finished,
+            Ok(true),
+            "did not observe PotterRoundFinished(Completed)"
+        );
+
+        drop(op_tx);
+
+        timeout(Duration::from_secs(10), backend)
+            .await
+            .expect("backend timed out")
+            .expect("backend panicked")
+            .expect("backend failed");
+
+        assert!(
+            marker.exists(),
+            "dummy server did not observe thread/backgroundTerminals/clean before turn/start response"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn backend_turn_interrupt_requests_turn_interrupt() {
         let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
