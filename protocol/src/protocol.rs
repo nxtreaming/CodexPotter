@@ -845,13 +845,17 @@ pub struct ExecCommandEndEvent {
     pub formatted_output: String,
 }
 
+/// Output stream that produced an in-progress command output chunk.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecOutputStream {
+    /// Standard output.
     Stdout,
+    /// Standard error.
     Stderr,
 }
 
+/// Streaming output chunk for an in-progress command execution.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ExecCommandOutputDeltaEvent {
     /// Identifier for the ExecCommandBegin that produced this chunk.

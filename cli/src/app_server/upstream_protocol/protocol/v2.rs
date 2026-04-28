@@ -1320,6 +1320,7 @@ pub struct TerminalInteractionNotification {
     pub stdin: String,
 }
 
+/// Notification payload for streaming output from a turn-scoped command execution item.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandExecutionOutputDeltaNotification {

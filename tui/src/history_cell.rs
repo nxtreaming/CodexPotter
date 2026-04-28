@@ -647,8 +647,8 @@ pub fn new_info_event(message: String, hint: Option<String>) -> PlainHistoryCell
     PlainHistoryCell { lines }
 }
 
-#[derive(Debug, Clone)]
 /// Summary information for a background unified-exec terminal entry.
+#[derive(Debug, Clone)]
 pub struct UnifiedExecProcessDetails {
     /// Command preview shown in the listing.
     pub command_display: String,
@@ -656,8 +656,8 @@ pub struct UnifiedExecProcessDetails {
     pub recent_chunks: Vec<String>,
 }
 
-#[derive(Debug)]
 /// History cell that renders the `/ps` output.
+#[derive(Debug)]
 pub struct UnifiedExecProcessesOutputCell {
     processes: Vec<UnifiedExecProcessDetails>,
 }
