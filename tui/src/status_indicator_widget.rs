@@ -23,6 +23,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::WidgetRef;
 use unicode_width::UnicodeWidthStr;
 
+use crate::line_truncation::truncate_line_to_width;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::render::renderable::Renderable;
 use crate::status_line::StatusLine;
@@ -227,13 +228,11 @@ impl StatusIndicatorWidget {
 
         if out.len() > self.details_max_lines {
             out.truncate(self.details_max_lines);
-            let content_width = usize::from(width).saturating_sub(prefix_width).max(1);
-            let max_base_len = content_width.saturating_sub(1);
-            if let Some(last) = out.last_mut()
-                && let Some(span) = last.spans.last_mut()
-            {
-                let trimmed: String = span.content.as_ref().chars().take(max_base_len).collect();
-                *span = format!("{trimmed}…").dim();
+            if let Some(last) = out.last_mut() {
+                let available_width = usize::from(width).saturating_sub(1);
+                let mut truncated = truncate_line_to_width(last.clone(), available_width);
+                truncated.spans.push(Span::from("…").dim());
+                *last = truncated;
             }
         }
 
@@ -423,9 +422,10 @@ mod tests {
         let lines = w.wrapped_details_lines(6);
         assert_eq!(lines.len(), STATUS_DETAILS_DEFAULT_MAX_LINES);
         let last = lines.last().expect("expected last details line");
-        assert!(
-            last.spans[1].content.as_ref().ends_with("…"),
-            "expected ellipsis in last line: {last:?}"
+        assert_eq!(
+            last.spans.last().map(|span| span.content.as_ref()),
+            Some("…"),
+            "expected ellipsis in last line: {last:?}",
         );
     }
 }

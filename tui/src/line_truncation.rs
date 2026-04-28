@@ -3,12 +3,13 @@ use ratatui::text::Span;
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
-pub fn line_width(line: &Line<'_>) -> usize {
+fn line_width(line: &Line<'_>) -> usize {
     line.iter()
         .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
         .sum()
 }
 
+/// Truncate a styled line to `max_width` display columns.
 pub fn truncate_line_to_width(line: Line<'static>, max_width: usize) -> Line<'static> {
     if max_width == 0 {
         return Line::from(Vec::<Span<'static>>::new());
