@@ -1127,11 +1127,10 @@ async fn handle_op(
             }
         }
         Op::Interrupt => {
-            let request = build_turn_interrupt_request(
-                io.next_id,
-                ctx.thread_id,
-                io.recovery.active_turn_id.as_ref(),
-            );
+            let Some(turn_id) = io.recovery.active_turn_id.as_deref() else {
+                return Ok(());
+            };
+            let request = build_turn_interrupt_request(io.next_id, ctx.thread_id, turn_id);
             let request_id = request.id().clone();
             send_message(io.stdin, &request).await?;
 
@@ -1245,11 +1244,8 @@ async fn send_turn_interrupt_for_current_state(
     ctx: TurnRequestContext<'_>,
     io: &mut AppServerIo<'_>,
 ) -> anyhow::Result<()> {
-    let request = build_turn_interrupt_request(
-        io.next_id,
-        ctx.thread_id,
-        io.recovery.active_turn_id.as_ref(),
-    );
+    let turn_id = io.recovery.active_turn_id.as_deref().unwrap_or("");
+    let request = build_turn_interrupt_request(io.next_id, ctx.thread_id, turn_id);
     send_message(io.stdin, &request).await?;
     Ok(())
 }
@@ -1266,13 +1262,13 @@ fn build_background_terminals_clean_request(next_id: &mut i64, thread_id: &str) 
 fn build_turn_interrupt_request(
     next_id: &mut i64,
     thread_id: &str,
-    active_turn_id: Option<&String>,
+    turn_id: &str,
 ) -> ClientRequest {
     ClientRequest::TurnInterrupt {
         request_id: next_request_id(next_id),
         params: crate::app_server::upstream_protocol::TurnInterruptParams {
             thread_id: thread_id.to_string(),
-            turn_id: active_turn_id.cloned().unwrap_or_default(),
+            turn_id: turn_id.to_string(),
         },
     }
 }
@@ -4643,6 +4639,138 @@ done
             saw_round_finished,
             Ok(true),
             "did not observe TurnStarted + PotterRoundFinished(Completed)"
+        );
+
+        drop(op_tx);
+
+        timeout(Duration::from_secs(5), backend)
+            .await
+            .expect("backend timed out")
+            .expect("backend panicked")
+            .expect("backend failed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn backend_interrupt_after_completed_turn_without_active_turn_is_noop() {
+        let _guard = lock_dummy_codex_test().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+        let marker = temp.path().join("unexpected-interrupt-after-complete");
+
+        let script = format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+
+MARKER="{marker}"
+
+if [[ "${{1:-}}" != "app-server" ]]; then
+  echo "expected app-server, got: $*" >&2
+  exit 1
+fi
+
+# initialize request
+IFS= read -r _line
+echo '{{"id":1,"result":{{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}}}'
+
+# initialized notification
+IFS= read -r _line
+
+# thread/start request
+IFS= read -r _line
+echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
+
+# turn/start request
+IFS= read -r _line
+echo '{{"method":"turn/started","params":{{"threadId":"00000000-0000-0000-0000-000000000000","turn":{{"id":"turn-1","items":[],"status":"inProgress","error":null}}}}}}'
+echo '{{"id":3,"result":{{"turn":{{"id":"turn-1"}}}}}}'
+echo '{{"method":"turn/completed","params":{{"threadId":"00000000-0000-0000-0000-000000000000","turn":{{"id":"turn-1","items":[],"status":"completed","error":null}}}}}}'
+
+if IFS= read -r -t 1 extra; then
+  touch "$MARKER"
+  echo "unexpected request after completed turn: $extra" >&2
+  exit 1
+fi
+
+# Wait for the client to close stdin to request shutdown.
+while IFS= read -r _line; do
+  :
+done
+"#,
+            marker = marker.display(),
+        );
+
+        write_dummy_codex_script(&codex_bin, script);
+
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+
+        let (op_tx, mut op_rx) = unbounded_channel::<Op>();
+        let backend = tokio::spawn(async move {
+            run_app_server_backend_inner(
+                AppServerBackendConfig {
+                    codex_bin: codex_bin.display().to_string(),
+                    developer_instructions: None,
+                    launch: AppServerLaunchConfig {
+                        spawn_sandbox: None,
+                        thread_sandbox: None,
+                        bypass_approvals_and_sandbox: false,
+                    },
+                    upstream_cli_args: Default::default(),
+                    codex_home: None,
+                    thread_cwd: None,
+                    resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
+                },
+                &mut op_rx,
+                &event_tx,
+            )
+            .await
+        });
+
+        op_tx
+            .send(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+            })
+            .expect("send user input");
+
+        let saw_round_finished = timeout(Duration::from_secs(5), async {
+            while let Some(event) = event_rx.recv().await {
+                if matches!(
+                    event.msg,
+                    EventMsg::PotterRoundFinished {
+                        outcome: PotterRoundOutcome::Completed,
+                        ..
+                    }
+                ) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+
+        assert_eq!(
+            saw_round_finished,
+            Ok(true),
+            "did not observe PotterRoundFinished(Completed)"
+        );
+
+        op_tx.send(Op::Interrupt).expect("send late interrupt");
+        let saw_unexpected_interrupt = timeout(Duration::from_millis(500), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            true
+        })
+        .await
+        .unwrap_or(false);
+        assert!(
+            !saw_unexpected_interrupt,
+            "backend sent turn/interrupt without an active turn"
         );
 
         drop(op_tx);
