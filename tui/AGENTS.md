@@ -18,6 +18,19 @@ Divergences must be documented in places below to avoid regression when syncing 
 - Record divergences in doc comments.
 - Cover divergences via proper tests (unit / end to end).
 
+### New Features
+
+**Transcript verbosity**, see `docs/spec/verbosity.md`. Related with:
+- transcript/output policy
+- verbosity (`minimal` / `simple`) mode selection
+- transcript item rendering, like `Ran` / `Explored` / `Searched` / `Viewed Image` / plan / change,
+  commentary status, timing separators, etc
+- `codex-potter exec` human-readable output
+
+**Project list**, see `docs/spec/project_list.md`. Related with:
+- `Ctrl+L`, `/list` feature
+- resume picker
+
 ### Text Box
 
 - Supports `$` skills picker, the same as upstream.
@@ -36,31 +49,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 
 ### Message Items
 
-- /verbosity provides finer-grained control over what content is printed:
-  Simple mode:
-  - Reasoning messages are never rendered.
-  - Successful `Ran` items suppress output preview and adjacent ones are collapsed into one.
-  - `Explored` items are more aggressively collapsed.
-  Minimal mode:
-  - With all the above Simple-mode suppressions, plus:
-  - `phase = commentary` agent messages render as a single dim transient transcript block that updates in place, never enters transcript history, stays visible across ordinary tool/history output, and clears only when replaced by newer commentary, superseded by non-commentary/final agent output, or the turn ends (append-only exec still prints them as status hints). Commentary deltas must not split the compact Change preview, and the live Change preview renders above the commentary block so the commentary reads like a status area rather than transcript history.
-  - Non-commentary agent messages are rendered without dimming (no gray agent messages in the transcript).
-  - Streamed agent text is committed only after completion; the latest completed non-commentary agent message may stay pending until a transcript barrier or `TurnComplete`.
-  - Tool/result barriers flush only completed Minimal-mode agent messages; in-flight `AgentMessageDelta` text waits for the completed `AgentMessage` (or is dropped on abnormal termination) so commentary deltas cannot leak into transcript history.
-  - `TurnComplete.last_agent_message` is rendered as the final answer when no non-commentary agent message was emitted (legacy/replay compatibility).
-  - Plan tool output is hidden
-  - All `Ran` and `Explored` items are hidden
-  - `Worked for ...` separators are hidden
-  - Consecutive Change (Edited, Created, Deleted) items are coalesced into one, and provide file list only, no diff body.
-  - The coalesced Change file list preserves patch event order instead of sorting paths alphabetically.
-- Consecutive `Viewed Image` items are coalesced into one block in Simple mode, preserve event order, and render live as new paths arrive; Minimal mode hides them.
-- Consecutive `Searched` items are coalesced into one block in Simple mode and render live as new queries arrive; Minimal mode hides them.
 - Additional codex-potter items (e.g. project creation hints, stream recovery retries, project-finished summary on success / budget exhaustion).
-- In interactive mode, after each CodexPotter round finishes, emits a dim `─ Round finished in … ─` separator line in the transcript (before any CodexPotter summary blocks).
-- `codex-potter exec` without `--json`:
-  - renders content similar to interactive mode, respect verbosity, but in append-only way — never folds/coalesces prior output.
-  - additionally emits the text of the shimmer when it changes.
-  - does not emit the dim `─ Round finished in … ─` separator line.
 - Hook status output uses protocol kebab-case event labels (for example `session-start`) to match
   exec output and hook run identifiers.
 
@@ -84,32 +73,11 @@ Behavior related
   - If no `[tui].verbosity` is configured yet, prompt for a default verbosity level.
   - When both prompts are shown, they render `Setup 1/2` and `Setup 2/2` markers.
 - Multi-agent collab is transcript-only: no agent thread picker UI (no per-agent transcript view).
-- Resume picker UI reuses the projects overlay UI (same as `Ctrl+L` / `/list`) with `Enter` to resume and `Esc` to start a new project.
 - Auto retry on errors (successful recoveries are transient-only; unrecoverable errors are surfaced).
 - Customized update notification / self-update (and on-disk state under `~/.codexpotter/`).
 - No desktop notifications when the terminal is unfocused.
 - Esc triggers project interrupt with an action selection UI instead of turn interrupt.
-- `Ctrl+L` (or `/list`) opens a full-screen projects list overlay with round summaries (also available on the prompt screen before any rounds start).
-- Projects overlay stays open across round boundaries (does not auto-close when a round ends).
-- Projects overlay auto-refreshes the list (and selected details) every minute while open, preserving selection + scroll positions when possible.
-- Projects overlay supports `Tab` to toggle a maximized details view (hide the list pane).
-- Projects overlay details text wraps to at most 100 columns while not maximized, even when the right pane is wider; maximized details view still uses the full pane width.
-- Projects overlay details pane shows a plain-text preview of the original user task message (first 5 lines + `... (N more lines)`) above the per-round final message summaries.
-- Projects overlay round headings show per-round duration when available: `ROUND N (took …) @ … ago` (otherwise `ROUND N`).
-- Projects overlay status colors distinguish cancelled-before-completion projects (dim), round-budget exhaustion (red), and post-completed-round interruptions (orange).
 - Project summary `Loop more rounds:` resume command includes the current process's non-default `codex-potter` global flags (aligns with the CLI exit resume note).
-
-### Temporary Upstream Bug Fixes
-
-These are intentional short-term differences from upstream Codex TUI that fix upstream-shared bugs.
-Prefer upstreaming or removing them once upstream has equivalent behavior.
-
-- Keyboard enhancement flags intentionally omit `REPORT_EVENT_TYPES`. Upstream currently requests
-  release/repeat events, which can leak raw CSI-u key-release bytes into the shell after `Ctrl+C`
-  exits.
-- `custom_terminal::Terminal::clear()` clears only the current viewport rows. Upstream currently
-  uses `ClearType::AfterCursor`, which can erase committed inline history outside the live viewport
-  during prompt transitions or exit cleanup.
 
 Engineering related:
 
@@ -122,6 +90,17 @@ Engineering related:
 - codex-potter explicitly forbids `pub(crate)` visibility in TUI code; only `pub` and private items are allowed.
 - `bottom_pane::textarea::TextArea` keeps atomic text elements as anonymous ranges only; upstream named-element helpers stay removed until codex-potter needs those flows.
 - codex-potter does not use Bazel.
+
+### Upstream Bug Fixes
+
+These fix upstream bugs. Prefer upstreaming or removing them once upstream has equivalent behavior.
+
+- Keyboard enhancement flags intentionally omit `REPORT_EVENT_TYPES`. Upstream currently requests
+  release/repeat events, which can leak raw CSI-u key-release bytes into the shell after `Ctrl+C`
+  exits.
+- `custom_terminal::Terminal::clear()` clears only the current viewport rows. Upstream currently
+  uses `ClearType::AfterCursor`, which can erase committed inline history outside the live viewport
+  during prompt transitions or exit cleanup.
 
 ## Conventions
 
