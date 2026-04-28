@@ -1068,7 +1068,7 @@ fn status_icon_and_style(status: &PotterProjectListStatus) -> (char, Style) {
         PotterProjectListStatus::BudgetExhausted => ('■', Style::default().red()),
         PotterProjectListStatus::Interrupted => ('■', Style::default().fg(orange_color())),
         PotterProjectListStatus::Failed => ('■', Style::default().red()),
-        PotterProjectListStatus::Incomplete => ('■', Style::default()),
+        PotterProjectListStatus::Incomplete => ('■', Style::default().fg(orange_color())),
     }
 }
 
@@ -1829,10 +1829,10 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_projects_render_with_neutral_status_style() {
+    fn incomplete_projects_render_with_orange_status_style() {
         let (icon, style) = status_icon_and_style(&PotterProjectListStatus::Incomplete);
         assert_eq!(icon, '■');
-        assert_eq!(style, Style::default());
+        assert_eq!(style, Style::default().fg(orange_color()));
     }
 
     #[test]
