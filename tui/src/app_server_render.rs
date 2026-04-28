@@ -326,6 +326,22 @@ fn should_pad_prompt_after_history_insert(lines: &[Line<'_>]) -> bool {
         .all(|span| span.content.as_ref().trim().is_empty())
 }
 
+fn maybe_insert_history_cell_separator(
+    cell: &Arc<dyn HistoryCell>,
+    has_emitted_history_lines: &mut bool,
+    display: &mut Vec<Line<'static>>,
+) {
+    if display.is_empty() || cell.is_stream_continuation() {
+        return;
+    }
+
+    if *has_emitted_history_lines {
+        display.insert(0, Line::from(""));
+    } else {
+        *has_emitted_history_lines = true;
+    }
+}
+
 /// Controls how a single Potter round is rendered into the terminal transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoundRenderOptions {
@@ -2474,14 +2490,13 @@ impl RenderAppState {
                 if self.codex_op_tx.is_none() {
                     self.should_pad_prompt_viewport = self.should_pad_prompt_viewport
                         || should_pad_prompt_after_history_insert(&display);
-                } else if !cell.is_stream_continuation() {
-                    if self.has_emitted_history_lines {
-                        display.insert(0, Line::from(""));
-                    } else {
-                        self.has_emitted_history_lines = true;
-                    }
                 }
 
+                maybe_insert_history_cell_separator(
+                    &cell,
+                    &mut self.has_emitted_history_lines,
+                    &mut display,
+                );
                 tui.insert_history_lines(display);
             }
             AppEvent::SyntaxThemeSelected { name } => {
@@ -5826,6 +5841,53 @@ mod tests {
         assert!(
             !saw_codex_op,
             "did not expect any CodexOp when /stop runs without a backend"
+        );
+    }
+
+    #[test]
+    fn prompt_screen_inserts_blank_line_between_ps_and_stop_history_cells() {
+        let width: u16 = 80;
+        let mut has_emitted_history_lines = false;
+
+        let ps_cell: Arc<dyn HistoryCell> = Arc::from(Box::new(
+            history_cell::new_unified_exec_processes_output(Vec::new()),
+        ) as Box<dyn HistoryCell>);
+        let mut ps_display = ps_cell.display_lines(width);
+        maybe_insert_history_cell_separator(
+            &ps_cell,
+            &mut has_emitted_history_lines,
+            &mut ps_display,
+        );
+        assert_eq!(
+            lines_to_plain_strings(&ps_display)
+                .first()
+                .map(String::as_str),
+            Some("/ps"),
+            "expected first inserted cell to omit a leading separator"
+        );
+
+        let stop_cell: Arc<dyn HistoryCell> = Arc::from(Box::new(history_cell::new_info_event(
+            "Stopping all background terminals.".to_string(),
+            /*hint*/ None,
+        )) as Box<dyn HistoryCell>);
+        let mut stop_display = stop_cell.display_lines(width);
+        maybe_insert_history_cell_separator(
+            &stop_cell,
+            &mut has_emitted_history_lines,
+            &mut stop_display,
+        );
+
+        let stop_lines = lines_to_plain_strings(&stop_display);
+        assert_eq!(
+            stop_lines.first().map(String::as_str),
+            Some(""),
+            "expected subsequent history cells to be separated by a blank line"
+        );
+        assert!(
+            stop_lines
+                .iter()
+                .any(|line| line.contains("Stopping all background terminals.")),
+            "expected stop message to remain visible"
         );
     }
 
