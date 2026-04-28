@@ -18,10 +18,12 @@ pub struct UnifiedExecFooter {
 }
 
 impl UnifiedExecFooter {
+    /// Create an empty footer with no background processes.
     pub fn new() -> Self {
         Self { process_count: 0 }
     }
 
+    /// Update the process count and report whether the rendered summary changed.
     pub fn set_process_count(&mut self, process_count: usize) -> bool {
         if self.process_count == process_count {
             return false;
@@ -30,6 +32,7 @@ impl UnifiedExecFooter {
         true
     }
 
+    /// Return whether there is any background process summary to render.
     pub fn is_empty(&self) -> bool {
         self.process_count == 0
     }

@@ -203,6 +203,7 @@ impl BottomPane {
         );
     }
 
+    /// Update the status header and details with explicit detail rendering options.
     pub fn update_status_header_with_details_options(
         &mut self,
         header: String,
@@ -307,6 +308,7 @@ impl BottomPane {
         status
     }
 
+    /// Set the number of background unified-exec processes surfaced in the bottom pane.
     pub fn set_unified_exec_process_count(&mut self, process_count: usize) {
         if self.unified_exec_footer.set_process_count(process_count) {
             self.sync_status_inline_message();

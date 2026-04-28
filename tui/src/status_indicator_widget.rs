@@ -33,12 +33,16 @@ use crate::tui::FrameRequester;
 use crate::wrapping::RtOptions;
 use crate::wrapping::word_wrap_lines;
 
+/// Default number of wrapped detail lines shown below the status header.
 pub const STATUS_DETAILS_DEFAULT_MAX_LINES: usize = 3;
 const DETAILS_PREFIX: &str = "  └ ";
 
+/// Controls whether status detail text should preserve its original casing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusDetailsCapitalization {
+    /// Uppercase the first character after trimming leading whitespace.
     CapitalizeFirst,
+    /// Preserve the detail text exactly after trimming leading whitespace.
     Preserve,
 }
 
@@ -139,6 +143,7 @@ impl StatusIndicatorWidget {
             });
     }
 
+    /// Update the compact message rendered on the same row as the status header.
     pub fn update_inline_message(&mut self, message: Option<String>) {
         self.inline_message = message
             .map(|message| message.trim().to_string())
