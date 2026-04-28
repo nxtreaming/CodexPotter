@@ -275,6 +275,7 @@ pub enum EventMsg {
     /// deprecated and should be phased out.
     DeprecationNotice(DeprecationNoticeEvent),
 
+    /// Human-readable background activity update from the backend.
     BackgroundEvent(BackgroundEventEvent),
 
     /// Notification that the agent is about to apply a code patch.
@@ -884,8 +885,10 @@ pub struct TerminalInteractionEvent {
     pub stdin: String,
 }
 
+/// Human-readable background activity update emitted while a command is detached or waiting.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BackgroundEventEvent {
+    /// Message to surface in transient status UI.
     pub message: String,
 }
 

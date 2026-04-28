@@ -22,6 +22,7 @@ use crate::app_server::upstream_protocol::JSONRPCNotification;
 use crate::app_server::upstream_protocol::JSONRPCRequest;
 use crate::app_server::upstream_protocol::RequestId;
 
+/// JSON-RPC notification method used for forwarded CodexPotter project events.
 pub const POTTER_EVENT_NOTIFICATION_METHOD: &str = "codex/event/potter";
 
 /// Requests from a Potter app-server client.

@@ -692,7 +692,6 @@ impl HistoryCell for UnifiedExecProcessesOutputCell {
         let prefix = "  • ";
         let prefix_width = UnicodeWidthStr::width(prefix);
         let truncation_suffix = " [...]";
-        let truncation_suffix_width = UnicodeWidthStr::width(truncation_suffix);
         let mut shown = 0usize;
 
         for process in &self.processes {
@@ -721,28 +720,13 @@ impl HistoryCell for UnifiedExecProcessesOutputCell {
             }
 
             let budget = wrap_width.saturating_sub(prefix_width);
-            let mut needs_suffix = snippet_truncated;
-            if !needs_suffix {
-                let (_, remainder, _) = take_prefix_by_width(&snippet, budget);
-                if !remainder.is_empty() {
-                    needs_suffix = true;
-                }
+            let (truncated, show_suffix) =
+                truncated_text_with_suffix(&snippet, budget, truncation_suffix, snippet_truncated);
+            let mut line = vec![prefix.dim(), Span::from(truncated).cyan()];
+            if show_suffix {
+                line.push(truncation_suffix.dim());
             }
-            if needs_suffix && budget > truncation_suffix_width {
-                let available = budget.saturating_sub(truncation_suffix_width);
-                let (truncated, _, _) = take_prefix_by_width(&snippet, available);
-                out.push(
-                    vec![
-                        prefix.dim(),
-                        Span::from(truncated).cyan(),
-                        truncation_suffix.dim(),
-                    ]
-                    .into(),
-                );
-            } else {
-                let (truncated, _, _) = take_prefix_by_width(&snippet, budget);
-                out.push(vec![prefix.dim(), Span::from(truncated).cyan()].into());
-            }
+            out.push(line.into());
 
             let chunk_prefix_first = "    ↳ ";
             let chunk_prefix_next = "      ";
@@ -758,21 +742,13 @@ impl HistoryCell for UnifiedExecProcessesOutputCell {
                     continue;
                 }
                 let budget = wrap_width.saturating_sub(chunk_prefix_width);
-                let (truncated, remainder, _) = take_prefix_by_width(chunk, budget);
-                if !remainder.is_empty() && budget > truncation_suffix_width {
-                    let available = budget.saturating_sub(truncation_suffix_width);
-                    let (shorter, _, _) = take_prefix_by_width(chunk, available);
-                    out.push(
-                        vec![
-                            chunk_prefix.dim(),
-                            Span::from(shorter).dim(),
-                            truncation_suffix.dim(),
-                        ]
-                        .into(),
-                    );
-                } else {
-                    out.push(vec![chunk_prefix.dim(), Span::from(truncated).dim()].into());
+                let (truncated, show_suffix) =
+                    truncated_text_with_suffix(chunk, budget, truncation_suffix, false);
+                let mut line = vec![chunk_prefix.dim(), Span::from(truncated).dim()];
+                if show_suffix {
+                    line.push(truncation_suffix.dim());
                 }
+                out.push(line.into());
             }
 
             shown += 1;
@@ -791,6 +767,25 @@ impl HistoryCell for UnifiedExecProcessesOutputCell {
         }
 
         out
+    }
+}
+
+fn truncated_text_with_suffix(
+    text: &str,
+    budget: usize,
+    suffix: &str,
+    force_suffix: bool,
+) -> (String, bool) {
+    let suffix_width = UnicodeWidthStr::width(suffix);
+    let (_, remainder, _) = take_prefix_by_width(text, budget);
+    let needs_suffix = force_suffix || !remainder.is_empty();
+
+    if needs_suffix && budget > suffix_width {
+        let (truncated, _, _) = take_prefix_by_width(text, budget - suffix_width);
+        (truncated, true)
+    } else {
+        let (truncated, _, _) = take_prefix_by_width(text, budget);
+        (truncated, false)
     }
 }
 

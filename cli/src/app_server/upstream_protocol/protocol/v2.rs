@@ -947,6 +947,7 @@ pub struct TurnInterruptResponse {}
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadBackgroundTerminalsCleanParams {
+    /// Thread whose background terminals should be stopped.
     pub thread_id: String,
 }
 
@@ -1324,9 +1325,13 @@ pub struct TerminalInteractionNotification {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandExecutionOutputDeltaNotification {
+    /// Thread that owns the command execution item.
     pub thread_id: String,
+    /// Turn that owns the command execution item.
     pub turn_id: String,
+    /// Command execution item that produced this output delta.
     pub item_id: String,
+    /// Output text delta from the command execution stream.
     pub delta: String,
 }
 
