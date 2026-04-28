@@ -59,15 +59,22 @@ fn display_width(s: &str) -> usize {
         return s.width();
     }
 
-    // Strip OSC sequences: ESC ] ... BEL
+    // Strip OSC sequences: ESC ] ... (BEL or ST).
     let mut visible = String::with_capacity(s.len());
     let mut chars = s.chars();
     while let Some(ch) = chars.next() {
         if ch == '\x1B' && chars.clone().next() == Some(']') {
-            // Consume the ']' and everything up to and including BEL.
+            // Consume the ']' and everything up to and including the terminator.
             chars.next(); // skip ']'
-            for c in chars.by_ref() {
+            loop {
+                let Some(c) = chars.next() else {
+                    break;
+                };
                 if c == '\x07' {
+                    break;
+                }
+                if c == '\x1B' && chars.as_str().starts_with('\\') {
+                    chars.next(); // skip '\\'
                     break;
                 }
             }
@@ -660,6 +667,12 @@ mod tests {
     #[test]
     fn display_width_ignores_osc8_hyperlink_sequences() {
         let text = "\x1B]8;;https://example.test\x07hello\x1B]8;;\x07";
+        assert_eq!(display_width(text), 5);
+    }
+
+    #[test]
+    fn display_width_ignores_osc8_hyperlink_sequences_terminated_by_st() {
+        let text = "\x1B]8;;https://example.test\x1B\\hello\x1B]8;;\x1B\\";
         assert_eq!(display_width(text), 5);
     }
 
