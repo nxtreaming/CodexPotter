@@ -51,7 +51,7 @@ Keep progress file updated until all listed tasks are complete or progress file'
 
    Progress file's front matter recorded git commit before change; use it to learn diffs.
 
-   5.2 Identify missing parts, unaligned areas, or possible improvements, and add them to `Todo`.
+   5.2 Identify issues, missing parts, unaligned areas, or possible improvements, and add them to `Todo`.
 
    IMPORTANT PRINCIPLE: `Done` TASKS COULD BE MISLEADING, always be critical and skeptical about `Done` tasks,
    as they could be written by previous low-quality agents, claimed to be done but actually incomplete,
@@ -101,5 +101,19 @@ Mark progress file's `finite_incantatem` to true ONLY IF you have not changed an
 
 Updating progress files or files under `.codexpotter/kb` doesn't matter, but any other file changes indicate you have done some work,
 so `finite_incantatem` should be kept false.
+
+# Review guidelines
+
+When you are acting as a reviewer for the code change made so far, here are the general guidelines
+for determining whether something is a bug and should be fixed:
+
+- It meaningfully impacts the accuracy, performance, security, or maintainability of the code.
+- The bug is discrete and actionable (i.e. not a general issue with the codebase or a combination of multiple issues).
+- Fixing the bug does not demand a level of rigor that is not present in the rest of the codebase (e.g. one doesn't need very detailed comments and input validation in a repository of one-off scripts in personal projects)
+- The bug was introduced by this project's change.
+- The author of the original PR would likely fix the issue if they were made aware of it.
+- The bug does not rely on unstated assumptions about the codebase or author's intent.
+- It is not enough to speculate that a change may disrupt another part of the codebase, to be considered a bug, one must identify the other parts of the code that are provably affected.
+- The bug is clearly not just an intentional change by the original author.
 
 </WORKFLOW_INSTRUCTIONS>
