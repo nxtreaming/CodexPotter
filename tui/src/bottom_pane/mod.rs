@@ -307,8 +307,8 @@ impl BottomPane {
         status
     }
 
-    pub fn set_unified_exec_processes(&mut self, processes: Vec<String>) {
-        if self.unified_exec_footer.set_processes(processes) {
+    pub fn set_unified_exec_process_count(&mut self, process_count: usize) {
+        if self.unified_exec_footer.set_process_count(process_count) {
             self.sync_status_inline_message();
             self.request_redraw();
         }
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn unified_exec_footer_renders_when_status_hidden() {
         let mut pane = new_test_pane();
-        pane.set_unified_exec_processes(vec!["sleep 5".to_string()]);
+        pane.set_unified_exec_process_count(1);
 
         let width = 80;
         let height = pane.desired_height(width);

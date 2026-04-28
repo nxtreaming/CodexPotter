@@ -14,26 +14,24 @@ use crate::render::renderable::Renderable;
 
 /// Tracks active unified-exec processes and renders a compact summary.
 pub struct UnifiedExecFooter {
-    processes: Vec<String>,
+    process_count: usize,
 }
 
 impl UnifiedExecFooter {
     pub fn new() -> Self {
-        Self {
-            processes: Vec::new(),
-        }
+        Self { process_count: 0 }
     }
 
-    pub fn set_processes(&mut self, processes: Vec<String>) -> bool {
-        if self.processes == processes {
+    pub fn set_process_count(&mut self, process_count: usize) -> bool {
+        if self.process_count == process_count {
             return false;
         }
-        self.processes = processes;
+        self.process_count = process_count;
         true
     }
 
     pub fn is_empty(&self) -> bool {
-        self.processes.is_empty()
+        self.process_count == 0
     }
 
     /// Returns the unindented summary text used by both footer and status-row rendering.
@@ -42,11 +40,11 @@ impl UnifiedExecFooter {
     /// callers can choose layout-specific framing (inline separator vs. row
     /// indentation). Returning `None` means there is nothing to surface.
     pub fn summary_text(&self) -> Option<String> {
-        if self.processes.is_empty() {
+        if self.process_count == 0 {
             return None;
         }
 
-        let count = self.processes.len();
+        let count = self.process_count;
         let plural = if count == 1 { "" } else { "s" };
         Some(format!(
             "{count} background terminal{plural} running · /ps to view · /stop to close"
@@ -100,13 +98,13 @@ mod tests {
     #[test]
     fn summary_text_pluralizes() {
         let mut footer = UnifiedExecFooter::new();
-        footer.set_processes(vec!["sleep 1".to_string()]);
+        footer.set_process_count(1);
         assert_eq!(
             footer.summary_text(),
             Some("1 background terminal running · /ps to view · /stop to close".to_string())
         );
 
-        footer.set_processes(vec!["sleep 1".to_string(), "sleep 2".to_string()]);
+        footer.set_process_count(2);
         assert_eq!(
             footer.summary_text(),
             Some("2 background terminals running · /ps to view · /stop to close".to_string())

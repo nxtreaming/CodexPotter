@@ -2986,12 +2986,8 @@ impl RenderAppState {
     }
 
     fn sync_unified_exec_footer(&mut self) {
-        let processes = self
-            .unified_exec_processes
-            .iter()
-            .map(|process| process.command_display.clone())
-            .collect();
-        self.bottom_pane.set_unified_exec_processes(processes);
+        self.bottom_pane
+            .set_unified_exec_process_count(self.unified_exec_processes.len());
     }
 
     fn update_bottom_pane_context_window(&mut self) {
