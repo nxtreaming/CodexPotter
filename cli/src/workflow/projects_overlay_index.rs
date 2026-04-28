@@ -237,23 +237,25 @@ fn rollout_has_interrupted_turn(workdir: &Path, rollout_path: &Path) -> bool {
         workdir,
         rollout_path,
     );
-    read_rollout_has_interrupted_turn(&rollout_path).unwrap_or(false)
+    read_rollout_has_interrupted_turn(&rollout_path)
 }
 
-fn read_rollout_has_interrupted_turn(rollout_path: &Path) -> anyhow::Result<bool> {
-    let file = std::fs::File::open(rollout_path)
-        .with_context(|| format!("open rollout {}", rollout_path.display()))?;
+fn read_rollout_has_interrupted_turn(rollout_path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(rollout_path) else {
+        return false;
+    };
     let reader = std::io::BufReader::new(file);
 
-    for (idx, line) in reader.lines().enumerate() {
-        let line_number = idx + 1;
-        let line = line.with_context(|| format!("read rollout line {line_number}"))?;
-        if line.trim().is_empty() {
+    for line in reader.lines().map_while(Result::ok) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
             continue;
         }
 
-        let value: serde_json::Value = serde_json::from_str(&line)
-            .with_context(|| format!("parse rollout json line {line_number}: {line}"))?;
+        let value: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
         if value.get("type").and_then(serde_json::Value::as_str) != Some("event_msg") {
             continue;
         }
@@ -265,11 +267,11 @@ fn read_rollout_has_interrupted_turn(rollout_path: &Path) -> anyhow::Result<bool
             continue;
         };
         if matches!(ev.reason, TurnAbortReason::Interrupted) {
-            return Ok(true);
+            return true;
         }
     }
 
-    Ok(false)
+    false
 }
 
 fn best_effort_project_user_message(lines: &[PotterRolloutLine]) -> Option<&str> {
@@ -317,7 +319,7 @@ fn best_effort_project_started_at_unix_secs(
         workdir,
         &rollout_path,
     );
-    read_first_rollout_timestamp_unix_secs(&resolved).ok()
+    read_first_rollout_timestamp_unix_secs(&resolved)
 }
 
 fn project_list_rounds(index: &PotterRolloutResumeIndex) -> u32 {
@@ -365,7 +367,7 @@ fn project_started_at_unix_secs(workdir: &Path, index: &PotterRolloutResumeIndex
         workdir,
         &rollout_path,
     );
-    read_first_rollout_timestamp_unix_secs(&rollout_path).ok()
+    read_first_rollout_timestamp_unix_secs(&rollout_path)
 }
 
 fn all_referenced_rollouts_exist(workdir: &Path, index: &PotterRolloutResumeIndex) -> bool {
@@ -393,32 +395,36 @@ fn all_referenced_rollouts_exist(workdir: &Path, index: &PotterRolloutResumeInde
         })
 }
 
-fn read_first_rollout_timestamp_unix_secs(rollout_path: &Path) -> anyhow::Result<u64> {
-    let file = std::fs::File::open(rollout_path)
-        .with_context(|| format!("open rollout {}", rollout_path.display()))?;
+fn read_first_rollout_timestamp_unix_secs(rollout_path: &Path) -> Option<u64> {
+    let file = std::fs::File::open(rollout_path).ok()?;
     let reader = std::io::BufReader::new(file);
 
-    for (idx, line) in reader.lines().enumerate() {
-        let line_number = idx + 1;
-        let line = line.with_context(|| format!("read rollout line {line_number}"))?;
+    for line in reader.lines().map_while(Result::ok) {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
 
-        let value: serde_json::Value = serde_json::from_str(trimmed)
-            .with_context(|| format!("parse rollout json line {line_number}: {trimmed}"))?;
+        let value: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
         let Some(ts) = value.get("timestamp").and_then(serde_json::Value::as_str) else {
             continue;
         };
 
-        let parsed = DateTime::parse_from_rfc3339(ts)
-            .with_context(|| format!("parse rollout timestamp {ts:?}"))?;
-        return u64::try_from(parsed.timestamp())
-            .context("convert rollout timestamp to unix seconds");
+        let parsed = match DateTime::parse_from_rfc3339(ts) {
+            Ok(parsed) => parsed,
+            Err(_) => continue,
+        };
+        let secs = match u64::try_from(parsed.timestamp()) {
+            Ok(secs) => secs,
+            Err(_) => continue,
+        };
+        return Some(secs);
     }
 
-    anyhow::bail!("missing timestamp in rollout {}", rollout_path.display());
+    None
 }
 
 fn read_project_description(
