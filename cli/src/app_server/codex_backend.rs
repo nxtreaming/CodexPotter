@@ -1093,14 +1093,8 @@ async fn handle_op(
             Ok(())
         }
         Op::CleanBackgroundTerminals => {
-            let request_id = next_request_id(io.next_id);
-            let request = ClientRequest::ThreadBackgroundTerminalsClean {
-                request_id: request_id.clone(),
-                params:
-                    crate::app_server::upstream_protocol::ThreadBackgroundTerminalsCleanParams {
-                        thread_id: ctx.thread_id.to_string(),
-                    },
-            };
+            let request = build_background_terminals_clean_request(io.next_id, ctx.thread_id);
+            let request_id = request.id().clone();
             send_message(io.stdin, &request).await?;
 
             match read_until_response_or_error(
@@ -1133,14 +1127,12 @@ async fn handle_op(
             }
         }
         Op::Interrupt => {
-            let request_id = next_request_id(io.next_id);
-            let request = ClientRequest::TurnInterrupt {
-                request_id: request_id.clone(),
-                params: crate::app_server::upstream_protocol::TurnInterruptParams {
-                    thread_id: ctx.thread_id.to_string(),
-                    turn_id: io.recovery.active_turn_id.clone().unwrap_or_default(),
-                },
-            };
+            let request = build_turn_interrupt_request(
+                io.next_id,
+                ctx.thread_id,
+                io.recovery.active_turn_id.as_ref(),
+            );
+            let request_id = request.id().clone();
             send_message(io.stdin, &request).await?;
 
             match read_until_response_or_error(
@@ -1191,14 +1183,10 @@ async fn read_turn_start_response_or_error(
                 maybe_op = io.op_rx.recv(), if !op_rx_closed => {
                     match maybe_op {
                         Some(Op::CleanBackgroundTerminals) => {
-                            let request_id = next_request_id(io.next_id);
-                            let request = ClientRequest::ThreadBackgroundTerminalsClean {
-                                request_id,
-                                params:
-                                    crate::app_server::upstream_protocol::ThreadBackgroundTerminalsCleanParams {
-                                        thread_id: ctx.thread_id.to_string(),
-                                    },
-                            };
+                            let request = build_background_terminals_clean_request(
+                                io.next_id,
+                                ctx.thread_id,
+                            );
                             send_message(io.stdin, &request).await?;
                         }
                         Some(Op::Interrupt) => {
@@ -1257,15 +1245,36 @@ async fn send_turn_interrupt_for_current_state(
     ctx: TurnRequestContext<'_>,
     io: &mut AppServerIo<'_>,
 ) -> anyhow::Result<()> {
-    let request = ClientRequest::TurnInterrupt {
-        request_id: next_request_id(io.next_id),
-        params: crate::app_server::upstream_protocol::TurnInterruptParams {
-            thread_id: ctx.thread_id.to_string(),
-            turn_id: io.recovery.active_turn_id.clone().unwrap_or_default(),
-        },
-    };
+    let request = build_turn_interrupt_request(
+        io.next_id,
+        ctx.thread_id,
+        io.recovery.active_turn_id.as_ref(),
+    );
     send_message(io.stdin, &request).await?;
     Ok(())
+}
+
+fn build_background_terminals_clean_request(next_id: &mut i64, thread_id: &str) -> ClientRequest {
+    ClientRequest::ThreadBackgroundTerminalsClean {
+        request_id: next_request_id(next_id),
+        params: crate::app_server::upstream_protocol::ThreadBackgroundTerminalsCleanParams {
+            thread_id: thread_id.to_string(),
+        },
+    }
+}
+
+fn build_turn_interrupt_request(
+    next_id: &mut i64,
+    thread_id: &str,
+    active_turn_id: Option<&String>,
+) -> ClientRequest {
+    ClientRequest::TurnInterrupt {
+        request_id: next_request_id(next_id),
+        params: crate::app_server::upstream_protocol::TurnInterruptParams {
+            thread_id: thread_id.to_string(),
+            turn_id: active_turn_id.cloned().unwrap_or_default(),
+        },
+    }
 }
 
 async fn handle_app_server_message(
