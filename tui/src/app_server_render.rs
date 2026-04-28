@@ -2352,17 +2352,11 @@ impl RenderAppState {
                     frame_requester.schedule_frame();
                 }
                 SlashCommand::Stop => {
-                    if self.codex_op_tx.is_none() {
-                        self.processor
-                            .emit_history_cell(Box::new(history_cell::new_error_event(
-                                "'/stop' is unavailable in this mode.".to_string(),
-                            )));
-                        frame_requester.schedule_frame();
-                        return;
+                    if self.codex_op_tx.is_some() {
+                        self.app_event_tx
+                            .send(AppEvent::CodexOp(Op::CleanBackgroundTerminals));
                     }
 
-                    self.app_event_tx
-                        .send(AppEvent::CodexOp(Op::CleanBackgroundTerminals));
                     self.unified_exec_processes.clear();
                     self.sync_unified_exec_footer();
                     self.processor
@@ -5755,6 +5749,83 @@ mod tests {
         assert!(
             !saw_interrupt,
             "did not expect Op::Interrupt in prompt screen"
+        );
+    }
+
+    #[test]
+    fn prompt_slash_stop_succeeds_without_backend_or_interrupt() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new_prompt_screen(
+            app_event_tx,
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            true,
+            Verbosity::default(),
+        );
+
+        app.bottom_pane.set_task_running(false);
+        app.bottom_pane.composer_mut().set_disable_paste_burst(true);
+        for ch in "/stop".chars() {
+            app.handle_key_event(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                crate::tui::FrameRequester::test_dummy(),
+                80,
+            );
+        }
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert_eq!(app.prompt_action, None);
+
+        let (_log_id, entry_count) = app.prompt_history.metadata();
+        assert_eq!(
+            entry_count, 0,
+            "expected prompt screen /stop not to be recorded in history"
+        );
+
+        let mut history_cells: Vec<Vec<String>> = Vec::new();
+        let mut saw_codex_op = false;
+        while let Ok(ev) = rx_app.try_recv() {
+            match ev {
+                AppEvent::InsertHistoryCell(cell) => {
+                    history_cells.push(lines_to_plain_strings(&cell.display_lines(80)));
+                }
+                AppEvent::CodexOp(_) => {
+                    saw_codex_op = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            history_cells
+                .iter()
+                .flatten()
+                .any(|line| line.contains("Stopping all background terminals.")),
+            "expected /stop to emit an info history cell"
+        );
+
+        assert!(
+            !saw_codex_op,
+            "did not expect any CodexOp when /stop runs without a backend"
         );
     }
 
