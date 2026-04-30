@@ -58,6 +58,13 @@ For agents: This file is carefully maintained and polished for better readabilit
 
 &ensp;
 
+
+## ✨ What's New
+
+- May 01, 2026: We now have a V2 version for Codex Desktop users! Checkout [v2 branch (experimental)](https://github.com/breezewish/CodexPotter/tree/v2) 🎉
+
+&ensp;
+
 ## ⚡️ Getting started
 
 **1. Prerequisites:** ensure you have [codex CLI](https://developers.openai.com/codex/quickstart?setup=cli) locally. CodexPotter drives your local codex to perform tasks.
